@@ -1,6 +1,7 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 use futures::future::Future;
-use futures::Stream;
+use futures::{Stream, Sink};
+use futures::sync::mpsc::Sender;
 use lapin::message::Delivery;
 use tokio::net::TcpStream;
 use tokio::runtime::Runtime;
@@ -41,6 +42,7 @@ pub struct Config {
 }
 
 impl Config {
+    //TODO: just use a connection string
     fn address(&self) -> SocketAddr {
         let host_port = format!("{}:{}", self.host, self.port);
         host_port
@@ -63,12 +65,13 @@ impl Default for Config {
     }
 }
 
-pub fn bind_and_consume(config: Config) {
+pub fn bind_and_consume(config: Config, tx: Sender<Message>) {
     let queue_name = config.queue_name.clone();
     let exchange = config.exchange.clone();
     let addr = config.address();
-    println!("got addr: {:?}", addr);
+    //TODO: can we reuse a runtime?
     let mut runtime = Runtime::new().unwrap();
+    let mut tx = tx.clone().wait();
 
     runtime.block_on(
         TcpStream::connect(&addr).and_then(|stream| {
@@ -107,8 +110,10 @@ pub fn bind_and_consume(config: Config) {
                         }).and_then(move |(channel, stream)| {
                         stream.for_each(move |delivery| {
                             let tag = delivery.delivery_tag.clone();
-                            let message = Message::from(delivery);
-                            println!("message: {}", serde_json::to_string(&message).unwrap());
+                            let msg = Message::from(delivery);
+                            let msg_json = serde_json::to_string(&msg).unwrap();
+                            tx.send(msg).expect(&format!("failed to send message: {}", msg_json));
+                            println!("got message: {}", msg_json);
                             channel.basic_ack(tag, false)
                         })
                     })
