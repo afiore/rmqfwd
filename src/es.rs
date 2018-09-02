@@ -14,7 +14,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             base_url: "http://localhost:9200".to_string(),
-            index: "rabbitm_messages".to_string(),
+            index: "rabbit_messages".to_string(),
             doc_type: "message".to_string(),
         }
     }
@@ -29,9 +29,9 @@ pub fn write_messages(rx: Receiver<Message>, config: Config) -> impl Future<Item
 
         match indexer.with_doc(&msg).send() {
             Result::Ok(_) =>
-              future::ok(()),
+              future::ok(debug!("writing message to Elasticsearch: {:?}", &msg)),
             Result::Err(err) =>
-              future::ok(eprintln!("ES returned an error: {:?}", err))
+              future::ok(error!("ES returned an error: {:?}", err))
         }
 
     }).collect()

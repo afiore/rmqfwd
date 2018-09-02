@@ -1,6 +1,7 @@
 extern crate rmqfwd;
 extern crate futures;
 extern crate tokio;
+extern crate env_logger;
 
 use rmqfwd::rmq::{Config, Message};
 use rmqfwd::rmq;
@@ -10,6 +11,8 @@ use futures::sync::mpsc;
 use tokio::runtime::Runtime;
 
 fn main() {
+    env_logger::init();
+
     let (tx, rx) =  mpsc::channel::<Message>(5);
     let mut rt = Runtime::new().unwrap();
 

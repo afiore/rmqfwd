@@ -104,7 +104,7 @@ pub fn bind_and_consume(config: Config, tx: Sender<Message>) -> impl Future<Item
     }).and_then(|(client, hearthbeat)| {
         //TODO: spawn using the same runtime.
         tokio::spawn(
-            hearthbeat.map_err(|e| eprintln!("The heartbeat task errored: {}", e))
+            hearthbeat.map_err(|e| error!("The heartbeat task errored: {}", e))
         );
         client.create_confirm_channel(ConfirmSelectOptions::default())
     }).and_then(move |channel| {
@@ -118,14 +118,14 @@ pub fn bind_and_consume(config: Config, tx: Sender<Message>) -> impl Future<Item
                               QueueDeclareOptions::default(),
                               FieldTable::default())
             .and_then(move |queue| {
-                println!("channel {} declared queue {}", id, "hello");
+                info!("channel {} declared queue {}", id, "hello");
                 channel.queue_bind(&queue_name,
                                    &exchange,
                                    "#",
                                    QueueBindOptions::default(),
                                    FieldTable::default()).map(move |_| (channel, queue))
                     .and_then(move |(channel, queue)| {
-                        println!("creating consumer");
+                        info!("creating consumer");
                         channel.basic_consume(&queue,
                                               "",
                                               BasicConsumeOptions::default(),
@@ -133,11 +133,11 @@ pub fn bind_and_consume(config: Config, tx: Sender<Message>) -> impl Future<Item
                     }).and_then(move |(channel, stream)| {
                     stream.for_each(move |delivery| {
                         let tag = delivery.delivery_tag.clone();
-                        println!("got message: {:?}", delivery);
+                        info!("got message: {:?}", delivery);
                         let msg = Message::from(delivery);
                         let msg_json = serde_json::to_string(&msg).unwrap();
                         tx.send(msg).expect(&format!("failed to send message through channel: {}", msg_json));
-                        println!("got message: {}", msg_json);
+                        info!("got message: {}", msg_json);
                         channel.basic_ack(tag, false)
                     })
                 })
