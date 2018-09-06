@@ -21,7 +21,9 @@ fn main() {
     //TODO: move elsewhere
     match &msg_search.init_index() {
         Ok(()) => info!("initialised es index"),
-        Err(err) => error!("couldn't initialise index: {}", err.description()),
+        Err(err) => {
+            error!("couldn't initialise index: {}", err.description());
+        }
     }
 
     rt.spawn(msg_search.write(rx));

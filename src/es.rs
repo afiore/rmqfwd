@@ -6,10 +6,9 @@ use rmq::Message;
 use std::boxed::Box;
 use rs_es::Client;
 use std::result::*;
-use std::collections::HashMap;
 use std::error::Error;
 use rs_es::operations::mapping::*;
-use serde_json::Value;
+use rs_es::query::Query;
 
 pub struct Config {
     base_url: String,
@@ -94,11 +93,24 @@ impl MessageSearchService for MessageSearch {
     // ES provides a convenient API for that: https://www.elastic.co/guide/en/elasticsearch/reference/2.4/docs-reindex.html
     // perhaps this tool should automatically manage migrations by managing two indices at the same time...
     fn init_index(&mut self) -> Result<(), Box<Error>> {
-        let mut mapping_op = MappingOperation::new(&mut self.es_client, &self.config.index);
-        mapping_op
-          .with_settings(&SETTINGS)
-          .with_mapping(&MAPPINGS)
-          .send().map(|_| ()).map_err(|err| Box::new(err) as Box<Error>)
+        let result = 
+           self.es_client
+             .count_query()
+             .with_indexes(&[&self.config.index])
+             .with_query(&Query::build_match_all().build())
+             .send();
+
+        if result.is_ok() {
+            info!("index {} already exists", &self.config.index);
+            Ok(())
+        } else {
+            let mut mapping_op = MappingOperation::new(&mut self.es_client, &self.config.index);
+            mapping_op
+              .with_settings(&SETTINGS)
+              .with_mapping(&MAPPINGS)
+              .send().map(|_| ()).map_err(|err| Box::new(err) as Box<Error>)
+        }
+
     }
 
     fn write(mut self, rx: Receiver<Message>) -> Box<Future<Item=(), Error=()> + Send> {
