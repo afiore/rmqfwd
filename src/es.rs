@@ -5,7 +5,7 @@ use futures::*;
 use rmq::Message;
 use std::boxed::Box;
 use rs_es::Client;
-use std::result::*;
+use std::sync::{Arc, Mutex};
 use std::error::Error;
 use rs_es::operations::mapping::*;
 use rs_es::query::Query;
@@ -70,20 +70,20 @@ lazy_static! {
 }
 
 pub trait MessageSearchService {
-    fn write(mut self, rx: Receiver<Message>) -> Box<Future<Item=(), Error=()> + Send>;
-    fn init_index(&mut self) -> Result<(), Box<Error>>;
+    fn write(&self, rx: Receiver<Message>) -> Box<Future<Item=(), Error=()> + Send>;
+    fn init_index(&self) -> Box<Future<Item=(), Error=()> + Send>;
 }
 
 pub struct MessageSearch {
-    es_client: Client,
-    config: Config,
+    es_client: Arc<Mutex<Client>>,
+    config: Arc<Config>,
 }
 
 impl MessageSearch {
     pub fn new(config: Config) -> Self {
         let err_msg = format!("Unable to parse Elasticsearch URL {}", config.base_url);
-        let es_client = Client::new(&config.base_url).expect(&err_msg);
-        MessageSearch { es_client: es_client, config: config }
+        let es_client = Arc::new(Mutex::new(Client::new(&config.base_url).expect(&err_msg)));
+        MessageSearch { es_client: es_client, config: Arc::new(config) }
     }
 
 }
@@ -92,29 +92,38 @@ impl MessageSearchService for MessageSearch {
     // NOTE: what happens when the mappings change?
     // ES provides a convenient API for that: https://www.elastic.co/guide/en/elasticsearch/reference/2.4/docs-reindex.html
     // perhaps this tool should automatically manage migrations by managing two indices at the same time...
-    fn init_index(&mut self) -> Result<(), Box<Error>> {
-        let result = 
-           self.es_client
-             .count_query()
-             .with_indexes(&[&self.config.index])
-             .with_query(&Query::build_match_all().build())
-             .send();
+    fn init_index(&self) -> Box<Future<Item=(), Error=()> + Send> {
+        let mutex = self.es_client.clone();
+        let config = self.config.clone();
 
-        if result.is_ok() {
-            info!("index {} already exists", &self.config.index);
-            Ok(())
-        } else {
-            let mut mapping_op = MappingOperation::new(&mut self.es_client, &self.config.index);
+        Box::new(future::lazy(move || {
+          //TODO: handle poisoning?
+          let mut es_client = mutex.lock().unwrap();
+          let result = es_client
+             .count_query()
+             .with_indexes(&[&config.index])
+             .with_query(&Query::build_match_all().build())
+             .send()
+             .map(|_| ())
+             .map_err(|_| ());
+ 
+          if result.is_ok() {
+             info!("index {} already exists", &config.index);
+             Ok(())
+          } else {
+             let mut mapping_op = MappingOperation::new(&mut es_client, &config.index);
             mapping_op
               .with_settings(&SETTINGS)
               .with_mapping(&MAPPINGS)
-              .send().map(|_| ()).map_err(|err| Box::new(err) as Box<Error>)
-        }
+              .send()
+              .map(|_| ())
+              .map_err(|_| ())
+         }
+       }))
+}
 
-    }
-
-    fn write(mut self, rx: Receiver<Message>) -> Box<Future<Item=(), Error=()> + Send> {
-        Box::new(rx.and_then(move |msg| {
+    fn write(&self, rx: Receiver<Message>) -> Box<Future<Item=(), Error=()> + Send> {
+/*         Box::new(rx.and_then(move |msg| {
             let mut indexer = self.es_client.index(&self.config.index, &self.config.doc_type);
 
             match indexer.with_doc(&msg).send() {
@@ -126,6 +135,7 @@ impl MessageSearchService for MessageSearch {
 
         }).collect()
             .then(|_| Ok(())))
-
+ */
+       unimplemented!();
     }
 }

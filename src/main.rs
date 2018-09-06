@@ -19,13 +19,13 @@ fn main() {
     let mut msg_search = MessageSearch::new(es::Config::default());
 
     //TODO: move elsewhere
-    match &msg_search.init_index() {
+/*     match &msg_search.init_index() {
         Ok(()) => info!("initialised es index"),
         Err(err) => {
             error!("couldn't initialise index: {}", err.description());
         }
     }
-
+ */
     rt.spawn(msg_search.write(rx));
     rt.block_on(rmq::bind_and_consume(Config::default(), tx)).expect("runtime error!");
 }
