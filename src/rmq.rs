@@ -13,6 +13,7 @@ use serde_json;
 use std::str;
 use std::io;
 use std::collections::BTreeMap;
+use chrono::prelude::*;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Message {
@@ -21,7 +22,8 @@ pub struct Message {
     pub redelivered: bool,
     pub body: String,
     pub node: Option<String>,
-    pub routed_queues: Vec<String>
+    pub routed_queues: Vec<String>,
+    pub recieved_at: DateTime<Utc>
 }
 
 fn amqp_str(ref v: &AMQPValue) -> Option<String> {
@@ -52,7 +54,8 @@ impl From<Delivery> for Message {
           exchange: d.routing_key, //e.g. publish.exchange_name
           redelivered: d.redelivered,
           body: str::from_utf8( &d.data).unwrap().to_string(),
-          node: node
+          node: node,
+          recieved_at: Utc::now(),
         }
     }
 }
