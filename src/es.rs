@@ -9,6 +9,7 @@ use std::result::*;
 use std::collections::HashMap;
 use std::error::Error;
 use rs_es::operations::mapping::*;
+use serde_json::Value;
 
 pub struct Config {
     base_url: String,
@@ -27,25 +28,46 @@ impl Default for Config {
 }
 
 lazy_static! {
+    //TODO: this is blindly copy-pasted from rs_es tests. Undestand and review this settings!
+    static ref SETTINGS: Settings = Settings {
+            number_of_shards: 1,
+            analysis: Analysis {
+                filter: json! ({
+                    "autocomplete_filter": {
+                        "type": "edge_ngram",
+                        "min_gram": 1,
+                        "max_gram": 2,
+                    }
+                }).as_object().expect("by construction 'autocomplete_filter' should be a map").clone(),
+                analyzer: json! ({
+                    "autocomplete": {
+                        "type": "custom",
+                        "tokenizer": "standard",
+                        "filter": [ "lowercase", "autocomplete_filter"]
+                    }
+                }).as_object().expect("by construction 'autocomplete' should be a map").clone()
+            }
+        };
+}
+
+
+
+lazy_static! {
     static ref MAPPINGS: Mapping<'static> = {
-        let mut index_mappings: Mapping = HashMap::new();
-        let mut message_mappings: DocType = HashMap::new();
+          hashmap! {
+              "message" => hashmap! {
+                  "exchange" => hashmap! {
+                      "type" => "string",
+                      "index" => "not_analyzed",
+                  },
+                  "routing_key" => hashmap! {
+                      "type" => "string",
+                      "index" => "not_analyzed",
+                  },
 
-        let mut exchange_prop = HashMap::new();
-        exchange_prop.insert("type", "string");
-        exchange_prop.insert("index", "not_analyzed");
-
-        let mut routing_key_prop = HashMap::new();
-        routing_key_prop.insert("type", "string");
-        routing_key_prop.insert("index", "not_analyzed");
-
-        message_mappings.insert("exchange", exchange_prop);
-        message_mappings.insert("routing_key", routing_key_prop);
-        index_mappings.insert("message", message_mappings);
-        
-        index_mappings
+              },
+          }
     };
-
 }
 
 pub trait MessageSearchService {
@@ -68,9 +90,15 @@ impl MessageSearch {
 }
 
 impl MessageSearchService for MessageSearch {
+    // NOTE: what happens when the mappings change?
+    // ES provides a convenient API for that: https://www.elastic.co/guide/en/elasticsearch/reference/2.4/docs-reindex.html
+    // perhaps this tool should automatically manage migrations by managing two indices at the same time...
     fn init_index(&mut self) -> Result<(), Box<Error>> {
         let mut mapping_op = MappingOperation::new(&mut self.es_client, &self.config.index);
-        mapping_op.with_mapping(&MAPPINGS).send().map(|_| ()).map_err(|err| Box::new(err) as Box<Error>)
+        mapping_op
+          .with_settings(&SETTINGS)
+          .with_mapping(&MAPPINGS)
+          .send().map(|_| ()).map_err(|err| Box::new(err) as Box<Error>)
     }
 
     fn write(mut self, rx: Receiver<Message>) -> Box<Future<Item=(), Error=()> + Send> {

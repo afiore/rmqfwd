@@ -15,3 +15,4 @@ env_logger = "0.5"
 rs-es = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 lazy_static = "1"
+maplit = "1" 

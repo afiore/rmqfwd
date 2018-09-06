@@ -121,7 +121,7 @@ pub fn bind_and_consume(config: Config, tx: Sender<Message>) -> impl Future<Item
                               QueueDeclareOptions::default(),
                               FieldTable::default())
             .and_then(move |queue| {
-                info!("channel {} declared queue {}", id, "hello");
+                info!("channel {} declared queue {}", id, &queue_name);
                 channel.queue_bind(&queue_name,
                                    &exchange,
                                    "#",
