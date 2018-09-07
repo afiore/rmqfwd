@@ -14,6 +14,7 @@ use std::str;
 use std::io;
 use std::collections::BTreeMap;
 use chrono::prelude::*;
+use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Message {
@@ -23,7 +24,8 @@ pub struct Message {
     pub body: String,
     pub node: Option<String>,
     pub routed_queues: Vec<String>,
-    pub recieved_at: DateTime<Utc>
+    pub recieved_at: DateTime<Utc>,
+    pub uuid: Uuid,
 }
 
 fn amqp_str(ref v: &AMQPValue) -> Option<String> {
@@ -56,6 +58,7 @@ impl From<Delivery> for Message {
           body: str::from_utf8( &d.data).unwrap().to_string(),
           node: node,
           recieved_at: Utc::now(),
+          uuid: Uuid::new_v4(),
         }
     }
 }
@@ -136,7 +139,7 @@ pub fn bind_and_consume(config: Config, tx: Sender<Message>) -> impl Future<Item
                     }).and_then(move |(channel, stream)| {
                     stream.for_each(move |delivery| {
                         let tag = delivery.delivery_tag.clone();
-                        info!("got message: {:?}", delivery);
+                        debug!("got message: {:?}", delivery);
                         let msg = Message::from(delivery);
                         let msg_json = serde_json::to_string(&msg).unwrap();
                         tx.send(msg).expect(&format!("failed to send message through channel: {}", msg_json));

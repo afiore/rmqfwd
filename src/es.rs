@@ -1,7 +1,6 @@
 use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
 use futures::future;
-use futures::*;
 use rmq::Message;
 use std::boxed::Box;
 use rs_es::Client;
@@ -69,9 +68,11 @@ lazy_static! {
     };
 }
 
+pub type Task = Box<Future<Item=(), Error=()> + Send>;
+
 pub trait MessageSearchService {
-    fn write(&self, rx: Receiver<Message>) -> Box<Future<Item=(), Error=()> + Send>;
-    fn init_index(&self) -> Box<Future<Item=(), Error=()> + Send>;
+    fn write(&self, rx: Receiver<Message>) -> Task;
+    fn init_index(&self) -> Task;
 }
 
 pub struct MessageSearch {
@@ -92,7 +93,7 @@ impl MessageSearchService for MessageSearch {
     // NOTE: what happens when the mappings change?
     // ES provides a convenient API for that: https://www.elastic.co/guide/en/elasticsearch/reference/2.4/docs-reindex.html
     // perhaps this tool should automatically manage migrations by managing two indices at the same time...
-    fn init_index(&self) -> Box<Future<Item=(), Error=()> + Send> {
+    fn init_index(&self) -> Task {
         let mutex = self.es_client.clone();
         let config = self.config.clone();
 
@@ -108,34 +109,33 @@ impl MessageSearchService for MessageSearch {
              .map_err(|_| ());
  
           if result.is_ok() {
-             info!("index {} already exists", &config.index);
-             Ok(())
+            info!("index {} already exists", &config.index);
+            Ok(())
           } else {
-             let mut mapping_op = MappingOperation::new(&mut es_client, &config.index);
+            let mut mapping_op = MappingOperation::new(&mut es_client, &config.index);
             mapping_op
               .with_settings(&SETTINGS)
               .with_mapping(&MAPPINGS)
               .send()
               .map(|_| ())
-              .map_err(|_| ())
+              .map_err(|err| error!("Couldn't initialise index: {:?}", err))
          }
        }))
 }
 
-    fn write(&self, rx: Receiver<Message>) -> Box<Future<Item=(), Error=()> + Send> {
-/*         Box::new(rx.and_then(move |msg| {
-            let mut indexer = self.es_client.index(&self.config.index, &self.config.doc_type);
+    fn write(&self, rx: Receiver<Message>) -> Task {
+        let es_mutex = self.es_client.clone();
+        let config = self.config.clone();
 
-            match indexer.with_doc(&msg).send() {
-                Result::Ok(_) =>
-                  future::ok(debug!("writing message to Elasticsearch: {:?}", &msg)),
-                Result::Err(err) =>
-                  future::ok(error!("ES returned an error: {:?}", err))
-            }
+        Box::new(rx.and_then(move |msg| {
+           let mut es_client = es_mutex.lock().unwrap();
+           let mut indexer = es_client.index(&config.index, &config.doc_type);
 
-        }).collect()
-            .then(|_| Ok(())))
- */
-       unimplemented!();
+           indexer
+             .with_doc(&msg)
+             .send()
+             .map(|_| debug!("writing message to Elasticsearch: {:?}", msg))
+             .map_err(|err| error!("ES returned an error: {}", err.description()))
+        }).collect().then(|_| Ok(())))
     }
 }

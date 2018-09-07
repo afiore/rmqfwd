@@ -10,6 +10,7 @@ extern crate futures;
 extern crate lapin_futures as lapin;
 extern crate rs_es;
 extern crate chrono;
+extern crate uuid;
 
 pub mod rmq;
 pub mod es;
