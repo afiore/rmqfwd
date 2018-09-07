@@ -1,13 +1,13 @@
+use futures::future;
 use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
-use futures::future;
 use rmq::Message;
-use std::boxed::Box;
-use rs_es::Client;
-use std::sync::{Arc, Mutex};
-use std::error::Error;
 use rs_es::operations::mapping::*;
 use rs_es::query::Query;
+use rs_es::Client;
+use std::boxed::Box;
+use std::error::Error;
+use std::sync::{Arc, Mutex};
 
 pub struct Config {
     base_url: String,
@@ -48,27 +48,25 @@ lazy_static! {
         };
 }
 
-
-
 lazy_static! {
     static ref MAPPINGS: Mapping<'static> = {
-          hashmap! {
-              "message" => hashmap! {
-                  "exchange" => hashmap! {
-                      "type" => "string",
-                      "index" => "not_analyzed",
-                  },
-                  "routing_key" => hashmap! {
-                      "type" => "string",
-                      "index" => "not_analyzed",
-                  },
+        hashmap! {
+            "message" => hashmap! {
+                "exchange" => hashmap! {
+                    "type" => "string",
+                    "index" => "not_analyzed",
+                },
+                "routing_key" => hashmap! {
+                    "type" => "string",
+                    "index" => "not_analyzed",
+                },
 
-              },
-          }
+            },
+        }
     };
 }
 
-pub type Task = Box<Future<Item=(), Error=()> + Send>;
+pub type Task = Box<Future<Item = (), Error = ()> + Send>;
 
 pub trait MessageSearchService {
     fn write(&self, rx: Receiver<Message>) -> Task;
@@ -84,9 +82,11 @@ impl MessageSearch {
     pub fn new(config: Config) -> Self {
         let err_msg = format!("Unable to parse Elasticsearch URL {}", config.base_url);
         let es_client = Arc::new(Mutex::new(Client::new(&config.base_url).expect(&err_msg)));
-        MessageSearch { es_client: es_client, config: Arc::new(config) }
+        MessageSearch {
+            es_client: es_client,
+            config: Arc::new(config),
+        }
     }
-
 }
 
 impl MessageSearchService for MessageSearch {
@@ -98,44 +98,47 @@ impl MessageSearchService for MessageSearch {
         let config = self.config.clone();
 
         Box::new(future::lazy(move || {
-          //TODO: handle poisoning?
-          let mut es_client = mutex.lock().unwrap();
-          let result = es_client
-             .count_query()
-             .with_indexes(&[&config.index])
-             .with_query(&Query::build_match_all().build())
-             .send()
-             .map(|_| ())
-             .map_err(|_| ());
- 
-          if result.is_ok() {
-            info!("index {} already exists", &config.index);
-            Ok(())
-          } else {
-            let mut mapping_op = MappingOperation::new(&mut es_client, &config.index);
-            mapping_op
-              .with_settings(&SETTINGS)
-              .with_mapping(&MAPPINGS)
-              .send()
-              .map(|_| ())
-              .map_err(|err| error!("Couldn't initialise index: {:?}", err))
-         }
-       }))
-}
+            //TODO: handle poisoning?
+            let mut es_client = mutex.lock().unwrap();
+            let result = es_client
+                .count_query()
+                .with_indexes(&[&config.index])
+                .with_query(&Query::build_match_all().build())
+                .send()
+                .map(|_| ())
+                .map_err(|_| ());
+
+            if result.is_ok() {
+                info!("index {} already exists", &config.index);
+                Ok(())
+            } else {
+                let mut mapping_op = MappingOperation::new(&mut es_client, &config.index);
+                mapping_op
+                    .with_settings(&SETTINGS)
+                    .with_mapping(&MAPPINGS)
+                    .send()
+                    .map(|_| ())
+                    .map_err(|err| error!("Couldn't initialise index: {:?}", err))
+            }
+        }))
+    }
 
     fn write(&self, rx: Receiver<Message>) -> Task {
         let es_mutex = self.es_client.clone();
         let config = self.config.clone();
 
-        Box::new(rx.and_then(move |msg| {
-           let mut es_client = es_mutex.lock().unwrap();
-           let mut indexer = es_client.index(&config.index, &config.doc_type);
+        Box::new(
+            rx.and_then(move |msg| {
+                let mut es_client = es_mutex.lock().unwrap();
+                let mut indexer = es_client.index(&config.index, &config.doc_type);
 
-           indexer
-             .with_doc(&msg)
-             .send()
-             .map(|_| debug!("writing message to Elasticsearch: {:?}", msg))
-             .map_err(|err| error!("ES returned an error: {}", err.description()))
-        }).collect().then(|_| Ok(())))
+                indexer
+                    .with_doc(&msg)
+                    .send()
+                    .map(|_| debug!("writing message to Elasticsearch: {:?}", msg))
+                    .map_err(|err| error!("ES returned an error: {}", err.description()))
+            }).collect()
+                .then(|_| Ok(())),
+        )
     }
 }
