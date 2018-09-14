@@ -10,13 +10,30 @@ use lapin::client::ConnectionOptions;
 use lapin::message::Delivery;
 use lapin::types::{AMQPValue, FieldTable};
 use serde_json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap};
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::str;
 use tokio;
 use tokio::net::TcpStream;
 use uuid::Uuid;
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Properties {
+    //TODO: add headers, and _type?
+    pub content_type: Option<String>,
+    pub content_encoding: Option<String>,
+    pub delivery_mode: Option<u8>,
+    pub priority: Option<u8>,
+    pub correlation_id: Option<String>,
+    pub reply_to: Option<String>,
+    pub expiration: Option<String>,
+    pub message_id: Option<String>,
+    pub timestamp: Option<u64>,
+    pub user_id: Option<String>,
+    pub app_id: Option<String>,
+    pub cluster_id: Option<String>,
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Message {
@@ -26,9 +43,10 @@ pub struct Message {
     pub body: String,
     pub node: Option<String>,
     pub routed_queues: Vec<String>,
-    pub recieved_at: DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
     pub uuid: Uuid,
 }
+
 
 fn amqp_str(ref v: &AMQPValue) -> Option<String> {
     match v {
@@ -46,7 +64,8 @@ fn amqp_str_array(ref v: &AMQPValue) -> Vec<String> {
 
 impl From<Delivery> for Message {
     fn from(d: Delivery) -> Self {
-        let headers = d.properties.headers().clone().unwrap_or_else(BTreeMap::new);
+        let p = d.properties;
+        let headers = p.headers().clone().unwrap_or_else(BTreeMap::new);
         let node = headers.get("node").and_then(|n| amqp_str(&n));
         let routing_key = headers
             .get("routing_keys")
@@ -56,6 +75,23 @@ impl From<Delivery> for Message {
             .map(amqp_str_array)
             .unwrap_or_else(Vec::new);
 
+        debug!("properties: {:?}", p);
+
+        let _properties = Properties {
+            content_type: p.content_type().clone(),
+            content_encoding: p.content_encoding().clone(),
+            delivery_mode: p.delivery_mode().clone(),
+            priority: p.priority().clone(),
+            correlation_id: p.correlation_id().clone(),
+            reply_to: p.reply_to().clone(),
+            expiration: p.expiration().clone(),
+            message_id: p.message_id().clone(),
+            timestamp: p.timestamp().clone(),
+            user_id: p.user_id().clone(),
+            app_id: p.app_id().clone(),
+            cluster_id: p.cluster_id().clone(),
+        };
+
         Message {
             routing_key: routing_key,
             routed_queues: routed_queues,
@@ -63,7 +99,8 @@ impl From<Delivery> for Message {
             redelivered: d.redelivered,
             body: str::from_utf8(&d.data).unwrap().to_string(),
             node: node,
-            recieved_at: Utc::now(),
+            //TODO: these break two way conversion with delivery
+            received_at: Utc::now(),
             uuid: Uuid::new_v4(),
         }
     }
