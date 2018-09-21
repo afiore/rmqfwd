@@ -8,7 +8,7 @@ use lapin::channel::{
 use lapin::client;
 use lapin::client::ConnectionOptions;
 use lapin::message::Delivery;
-use lapin::types::{AMQPValue, FieldTable};
+use lapin::types::*;
 use serde_json;
 use std::collections::{BTreeMap};
 use std::io;
@@ -19,28 +19,12 @@ use tokio::net::TcpStream;
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct Properties {
-    //TODO: add headers, and _type?
-    pub content_type: Option<String>,
-    pub content_encoding: Option<String>,
-    pub delivery_mode: Option<u8>,
-    pub priority: Option<u8>,
-    pub correlation_id: Option<String>,
-    pub reply_to: Option<String>,
-    pub expiration: Option<String>,
-    pub message_id: Option<String>,
-    pub timestamp: Option<u64>,
-    pub user_id: Option<String>,
-    pub app_id: Option<String>,
-    pub cluster_id: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
 pub struct Message {
     pub routing_key: Option<String>,
     pub exchange: String,
     pub redelivered: bool,
     pub body: String,
+    pub headers: FieldTable,
     pub node: Option<String>,
     pub routed_queues: Vec<String>,
     pub received_at: DateTime<Utc>,
@@ -55,42 +39,76 @@ fn amqp_str(ref v: &AMQPValue) -> Option<String> {
     }
 }
 
-fn amqp_str_array(ref v: &AMQPValue) -> Vec<String> {
+fn amqp_str_array(ref v: AMQPValue) -> Vec<String> {
     match v {
         AMQPValue::FieldArray(vs) => vs.into_iter().filter_map(amqp_str).collect(),
         _ => Vec::new(),
     }
 }
 
+fn amqp_field_table(ref v: AMQPValue) -> FieldTable {
+    match v {
+        AMQPValue::FieldTable(t) => t.clone(),
+        _ => BTreeMap::new(),
+    }
+}
+
+
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "AMQPValue", tag = "amqp_tag", content = "value")]
+pub enum AMQPValueDef {
+    /// A bool
+    Boolean(bool),
+    /// An i8
+    ShortShortInt(i8),
+    /// A u8
+    ShortShortUInt(u8),
+    /// An i16
+    ShortInt(i16),
+    /// A u16
+    ShortUInt(u16),
+    /// An i32
+    LongInt(i32),
+    /// A u32
+    LongUInt(u32),
+    /// An i64
+    LongLongInt(i64),
+    /// An f32
+    Float(f32),
+    /// An f64
+    Double(f64),
+    /// A decimal value
+    DecimalValue(DecimalValue),
+    /// A String
+    LongString(String),
+    /// An array of AMQPValue
+    FieldArray(FieldArray),
+    /// A timestamp (u32)
+    Timestamp(u64),
+    /// A Map<String, AMQPValue>
+    FieldTable(FieldTable),
+    /// An array of bytes (RabbitMQ speicific)
+    ByteArray(ByteArray),
+    /// No value
+    Void,
+}
+
+
 impl From<Delivery> for Message {
     fn from(d: Delivery) -> Self {
         let p = d.properties;
-        let headers = p.headers().clone().unwrap_or_else(BTreeMap::new);
-        let node = headers.get("node").and_then(|n| amqp_str(&n));
+        let mut headers = p.headers().clone().unwrap_or_else(BTreeMap::new);
+        let node = headers.remove("node").and_then(|n| amqp_str(&n));
         let routing_key = headers
-            .get("routing_keys")
-            .and_then(|rk| amqp_str_array(&rk).into_iter().next());
+            .remove("routing_keys")
+            .and_then(|rk| amqp_str_array(rk).into_iter().next());
         let routed_queues = headers
-            .get("routed_queues")
+            .remove("routed_queues")
             .map(amqp_str_array)
             .unwrap_or_else(Vec::new);
 
-        debug!("properties: {:?}", p);
-
-        let _properties = Properties {
-            content_type: p.content_type().clone(),
-            content_encoding: p.content_encoding().clone(),
-            delivery_mode: p.delivery_mode().clone(),
-            priority: p.priority().clone(),
-            correlation_id: p.correlation_id().clone(),
-            reply_to: p.reply_to().clone(),
-            expiration: p.expiration().clone(),
-            message_id: p.message_id().clone(),
-            timestamp: p.timestamp().clone(),
-            user_id: p.user_id().clone(),
-            app_id: p.app_id().clone(),
-            cluster_id: p.cluster_id().clone(),
-        };
+        let mut props = headers.remove("properties").map(amqp_field_table).unwrap_or_else(BTreeMap::new);
+        let prop_headers = props.remove("headers").map(amqp_field_table).unwrap_or_else(BTreeMap::new);
 
         Message {
             routing_key: routing_key,
@@ -99,7 +117,8 @@ impl From<Delivery> for Message {
             redelivered: d.redelivered,
             body: str::from_utf8(&d.data).unwrap().to_string(),
             node: node,
-            //TODO: these break two way conversion with delivery
+            headers: prop_headers,
+            //TODO: introduce a wrapper type for these
             received_at: Utc::now(),
             uuid: Uuid::new_v4(),
         }

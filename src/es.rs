@@ -30,20 +30,8 @@ lazy_static! {
     static ref SETTINGS: Settings = Settings {
             number_of_shards: 1,
             analysis: Analysis {
-                filter: json! ({
-                    "autocomplete_filter": {
-                        "type": "edge_ngram",
-                        "min_gram": 1,
-                        "max_gram": 2,
-                    }
-                }).as_object().expect("by construction 'autocomplete_filter' should be a map").clone(),
-                analyzer: json! ({
-                    "autocomplete": {
-                        "type": "custom",
-                        "tokenizer": "standard",
-                        "filter": [ "lowercase", "autocomplete_filter"]
-                    }
-                }).as_object().expect("by construction 'autocomplete' should be a map").clone()
+                filter: json! ({}).as_object().expect("by construction 'autocomplete_filter' should be a map").clone(),
+                analyzer: json! ({}).as_object().expect("by construction 'autocomplete' should be a map").clone()
             }
         };
 }
@@ -60,7 +48,22 @@ lazy_static! {
                     "type" => "string",
                     "index" => "not_analyzed",
                 },
-
+                "received_at" => hashmap! {
+                    "type" => "date",
+                    "index" => "not_analyzed",
+                },
+                "redelivered" => hashmap! {
+                    "type" => "boolean",
+                    "index" => "not_analyzed",
+                },
+                "routing_key" => hashmap! {
+                    "type" => "string",
+                    "index" => "not_analyzed",
+                },
+                "uuid" => hashmap! {
+                    "type" => "string",
+                    "index" => "not_analyzed",
+                },
             },
         }
     };
