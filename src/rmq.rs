@@ -10,6 +10,7 @@ use lapin::client::ConnectionOptions;
 use lapin::message::Delivery;
 use lapin::types::*;
 use serde_json;
+use serde::ser::*;
 use std::collections::{BTreeMap};
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -18,13 +19,13 @@ use tokio;
 use tokio::net::TcpStream;
 use uuid::Uuid;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Debug)]
 pub struct Message {
     pub routing_key: Option<String>,
     pub exchange: String,
     pub redelivered: bool,
     pub body: String,
-    pub headers: FieldTable,
+    pub headers: WMap,
     pub node: Option<String>,
     pub routed_queues: Vec<String>,
     pub received_at: DateTime<Utc>,
@@ -53,45 +54,62 @@ fn amqp_field_table(ref v: AMQPValue) -> FieldTable {
     }
 }
 
+struct W(AMQPValue);
+struct WArr(Vec<AMQPValue>);
+#[derive(Debug)]
+pub struct WMap(FieldTable);
 
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "AMQPValue", tag = "amqp_tag", content = "value")]
-pub enum AMQPValueDef {
-    /// A bool
-    Boolean(bool),
-    /// An i8
-    ShortShortInt(i8),
-    /// A u8
-    ShortShortUInt(u8),
-    /// An i16
-    ShortInt(i16),
-    /// A u16
-    ShortUInt(u16),
-    /// An i32
-    LongInt(i32),
-    /// A u32
-    LongUInt(u32),
-    /// An i64
-    LongLongInt(i64),
-    /// An f32
-    Float(f32),
-    /// An f64
-    Double(f64),
-    /// A decimal value
-    DecimalValue(DecimalValue),
-    /// A String
-    LongString(String),
-    /// An array of AMQPValue
-    FieldArray(FieldArray),
-    /// A timestamp (u32)
-    Timestamp(u64),
-    /// A Map<String, AMQPValue>
-    FieldTable(FieldTable),
-    /// An array of bytes (RabbitMQ speicific)
-    ByteArray(ByteArray),
-    /// No value
-    Void,
+impl Serialize for W {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where
+        S: Serializer {
+       let mut obj = serializer.serialize_struct("Primitive", 2);
+
+       match self.0 {
+           AMQPValue::Boolean(ref v) => serializer.serialize_bool(*v),
+           AMQPValue::ShortShortInt(ref v) => serializer.serialize_i8(*v),
+           AMQPValue::ShortShortUInt(ref v) => serializer.serialize_u8(*v),
+           AMQPValue::ShortInt(ref v) => serializer.serialize_i16(*v),
+           AMQPValue::ShortUInt(ref v) => serializer.serialize_u16(*v),
+           AMQPValue::LongLongInt(ref v) => serializer.serialize_i64(*v),
+           AMQPValue::LongUInt(ref v) => serializer.serialize_u32(*v),
+           AMQPValue::LongInt(ref v) => serializer.serialize_i32(*v),
+           AMQPValue::LongString(ref v) => serializer.serialize_str(v),
+           AMQPValue::Float(ref v) => serializer.serialize_f32(*v),
+           AMQPValue::Double(ref v) => serializer.serialize_f64(*v),
+           AMQPValue::DecimalValue(ref _v) => unimplemented!(),
+           AMQPValue::ByteArray(ref _v) => unimplemented!(),
+           AMQPValue::FieldArray(ref v) => WArr(v.clone()).serialize(serializer),
+           AMQPValue::FieldTable(ref v) => WMap(v.clone()).serialize(serializer),
+           AMQPValue::Timestamp(ref v) => serializer.serialize_u64(*v),
+           AMQPValue::Void => serializer.serialize_unit(),
+       }
+    }
 }
+
+impl Serialize for WArr {
+    fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error> where
+        S: Serializer {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for el in &self.0 {
+           seq.serialize_element(&W(el.clone()))?;
+        }
+        seq.end()
+    }
+}
+
+impl Serialize for WMap {
+    fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error> where
+        S: Serializer {
+
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (k, v) in &self.0 {
+            map.serialize_entry(&k, &W(v.clone()))?;
+        }
+        map.end()
+
+    }
+}
+
 
 
 impl From<Delivery> for Message {
@@ -117,7 +135,7 @@ impl From<Delivery> for Message {
             redelivered: d.redelivered,
             body: str::from_utf8(&d.data).unwrap().to_string(),
             node: node,
-            headers: prop_headers,
+            headers: WMap(prop_headers),
             //TODO: introduce a wrapper type for these
             received_at: Utc::now(),
             uuid: Uuid::new_v4(),
