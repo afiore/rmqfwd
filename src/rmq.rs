@@ -10,7 +10,6 @@ use lapin::client::ConnectionOptions;
 use lapin::message::Delivery;
 use lapin::types::*;
 use serde_json;
-use serde::ser::*;
 use std::collections::{BTreeMap};
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -25,7 +24,8 @@ pub struct Message {
     pub exchange: String,
     pub redelivered: bool,
     pub body: String,
-    pub headers: WMap,
+    #[serde(with = "AMQPValueDef")]
+    pub headers: AMQPValue,
     pub node: Option<String>,
     pub routed_queues: Vec<String>,
     pub received_at: DateTime<Utc>,
@@ -54,62 +54,81 @@ fn amqp_field_table(ref v: AMQPValue) -> FieldTable {
     }
 }
 
-struct W(AMQPValue);
-struct WArr(Vec<AMQPValue>);
-#[derive(Debug)]
-pub struct WMap(FieldTable);
+#[derive(Serialize)]
+#[serde(remote = "AMQPValue", tag = "amqp_tag", content = "value")]
+pub enum AMQPValueDef {
+    /// A bool
+    Boolean(bool),
+    /// An i8
+    ShortShortInt(i8),
+    /// A u8
+    ShortShortUInt(u8),
+    /// An i16
+    ShortInt(i16),
+    /// A u16
+    ShortUInt(u16),
+    /// An i32
+    LongInt(i32),
+    /// A u32
+    LongUInt(u32),
+    /// An i64
+    LongLongInt(i64),
+    /// An f32
+    Float(f32),
+    /// An f64
+    Double(f64),
+    /// A decimal value
+    DecimalValue(DecimalValue),
+    /// A String
+    LongString(String),
+    /// An array of AMQPValue
+    #[serde(with="amqp_array")]
+    FieldArray(Vec<AMQPValue>),
+    /// A timestamp (u32)
+    Timestamp(u64),
+    /// A Map<String, AMQPValue>
+    #[serde(with="amqp_map")]
+    FieldTable(BTreeMap<String, AMQPValue>),
+    /// An array of bytes (RabbitMQ speicific)
+    ByteArray(ByteArray),
+    /// No value
+    Void,
+}
 
-impl Serialize for W {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where
+#[derive(Serialize)]
+struct W<'a>(#[serde(with = "AMQPValueDef")] &'a AMQPValue);
+
+mod amqp_array {
+    use serde::ser::*;
+    use lapin::types::AMQPValue;
+    use super::W;
+
+    pub fn serialize<S>(array: &Vec<AMQPValue>, serializer: S) -> Result<S::Ok, S::Error>
+      where
         S: Serializer {
-       let mut obj = serializer.serialize_struct("Primitive", 2);
-
-       match self.0 {
-           AMQPValue::Boolean(ref v) => serializer.serialize_bool(*v),
-           AMQPValue::ShortShortInt(ref v) => serializer.serialize_i8(*v),
-           AMQPValue::ShortShortUInt(ref v) => serializer.serialize_u8(*v),
-           AMQPValue::ShortInt(ref v) => serializer.serialize_i16(*v),
-           AMQPValue::ShortUInt(ref v) => serializer.serialize_u16(*v),
-           AMQPValue::LongLongInt(ref v) => serializer.serialize_i64(*v),
-           AMQPValue::LongUInt(ref v) => serializer.serialize_u32(*v),
-           AMQPValue::LongInt(ref v) => serializer.serialize_i32(*v),
-           AMQPValue::LongString(ref v) => serializer.serialize_str(v),
-           AMQPValue::Float(ref v) => serializer.serialize_f32(*v),
-           AMQPValue::Double(ref v) => serializer.serialize_f64(*v),
-           AMQPValue::DecimalValue(ref _v) => unimplemented!(),
-           AMQPValue::ByteArray(ref _v) => unimplemented!(),
-           AMQPValue::FieldArray(ref v) => WArr(v.clone()).serialize(serializer),
-           AMQPValue::FieldTable(ref v) => WMap(v.clone()).serialize(serializer),
-           AMQPValue::Timestamp(ref v) => serializer.serialize_u64(*v),
-           AMQPValue::Void => serializer.serialize_unit(),
-       }
+      let mut col = serializer.serialize_seq(Some(array.len()))?;
+      for el in array {
+          col.serialize_element(&W(el))?;
+      }
+      col.end()
     }
 }
 
-impl Serialize for WArr {
-    fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error> where
+mod amqp_map {
+    use serde::ser::*;
+    use lapin::types::AMQPValue;
+    use std::collections::BTreeMap;
+    use super::W;
+    pub fn serialize<S>(map: &BTreeMap<String, AMQPValue>, serializer: S) -> Result<S::Ok, S::Error>
+      where
         S: Serializer {
-        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
-        for el in &self.0 {
-           seq.serialize_element(&W(el.clone()))?;
-        }
-        seq.end()
+      let mut out = serializer.serialize_map(Some(map.len()))?;
+      for (k, v) in map {
+        out.serialize_entry(&k, &W(v))?;
+      }
+      out.end()
     }
 }
-
-impl Serialize for WMap {
-    fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error> where
-        S: Serializer {
-
-        let mut map = serializer.serialize_map(Some(self.0.len()))?;
-        for (k, v) in &self.0 {
-            map.serialize_entry(&k, &W(v.clone()))?;
-        }
-        map.end()
-
-    }
-}
-
 
 
 impl From<Delivery> for Message {
@@ -135,7 +154,7 @@ impl From<Delivery> for Message {
             redelivered: d.redelivered,
             body: str::from_utf8(&d.data).unwrap().to_string(),
             node: node,
-            headers: WMap(prop_headers),
+            headers: AMQPValue::FieldTable(prop_headers),
             //TODO: introduce a wrapper type for these
             received_at: Utc::now(),
             uuid: Uuid::new_v4(),

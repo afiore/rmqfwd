@@ -64,6 +64,10 @@ lazy_static! {
                     "type" => "string",
                     "index" => "not_analyzed",
                 },
+                "headers" => hashmap! {
+                  "type" => "object",
+                  "enabled" => "false"
+                }
             },
         }
     };
