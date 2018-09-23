@@ -18,24 +18,56 @@ use tokio;
 use tokio::net::TcpStream;
 use uuid::Uuid;
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Message {
     pub routing_key: Option<String>,
     pub exchange: String,
     pub redelivered: bool,
     pub body: String,
-    #[serde(with = "AMQPValueDef")]
     pub headers: AMQPValue,
+    pub properties: Properties,
     pub node: Option<String>,
     pub routed_queues: Vec<String>,
     pub received_at: DateTime<Utc>,
     pub uuid: Uuid,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Properties {
+    //TODO: add _type?
+    pub content_type: Option<String>,
+    pub content_encoding: Option<String>,
+    pub delivery_mode: Option<u8>,
+    pub priority: Option<u8>,
+    pub correlation_id: Option<String>,
+    pub reply_to: Option<String>,
+    pub expiration: Option<String>,
+    pub message_id: Option<String>,
+    pub timestamp: Option<u64>,
+    pub user_id: Option<String>,
+    pub app_id: Option<String>,
+    pub cluster_id: Option<String>,
+}
+
+
 
 fn amqp_str(ref v: &AMQPValue) -> Option<String> {
     match v {
         AMQPValue::LongString(s) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+fn amqp_u8(v: &AMQPValue) -> Option<u8> {
+     match v {
+        AMQPValue::ShortShortUInt(s) => Some(*s),
+        _ => None,
+    }
+}
+
+fn amqp_u64(v: &AMQPValue) -> Option<u64> {
+     match v {
+        AMQPValue::Timestamp(s) => Some(*s),
         _ => None,
     }
 }
@@ -54,83 +86,6 @@ fn amqp_field_table(ref v: AMQPValue) -> FieldTable {
     }
 }
 
-#[derive(Serialize)]
-#[serde(remote = "AMQPValue", tag = "amqp_tag", content = "value")]
-pub enum AMQPValueDef {
-    /// A bool
-    Boolean(bool),
-    /// An i8
-    ShortShortInt(i8),
-    /// A u8
-    ShortShortUInt(u8),
-    /// An i16
-    ShortInt(i16),
-    /// A u16
-    ShortUInt(u16),
-    /// An i32
-    LongInt(i32),
-    /// A u32
-    LongUInt(u32),
-    /// An i64
-    LongLongInt(i64),
-    /// An f32
-    Float(f32),
-    /// An f64
-    Double(f64),
-    /// A decimal value
-    DecimalValue(DecimalValue),
-    /// A String
-    LongString(String),
-    /// An array of AMQPValue
-    #[serde(with="amqp_array")]
-    FieldArray(Vec<AMQPValue>),
-    /// A timestamp (u32)
-    Timestamp(u64),
-    /// A Map<String, AMQPValue>
-    #[serde(with="amqp_map")]
-    FieldTable(BTreeMap<String, AMQPValue>),
-    /// An array of bytes (RabbitMQ speicific)
-    ByteArray(ByteArray),
-    /// No value
-    Void,
-}
-
-#[derive(Serialize)]
-struct W<'a>(#[serde(with = "AMQPValueDef")] &'a AMQPValue);
-
-mod amqp_array {
-    use serde::ser::*;
-    use lapin::types::AMQPValue;
-    use super::W;
-
-    pub fn serialize<S>(array: &Vec<AMQPValue>, serializer: S) -> Result<S::Ok, S::Error>
-      where
-        S: Serializer {
-      let mut col = serializer.serialize_seq(Some(array.len()))?;
-      for el in array {
-          col.serialize_element(&W(el))?;
-      }
-      col.end()
-    }
-}
-
-mod amqp_map {
-    use serde::ser::*;
-    use lapin::types::AMQPValue;
-    use std::collections::BTreeMap;
-    use super::W;
-    pub fn serialize<S>(map: &BTreeMap<String, AMQPValue>, serializer: S) -> Result<S::Ok, S::Error>
-      where
-        S: Serializer {
-      let mut out = serializer.serialize_map(Some(map.len()))?;
-      for (k, v) in map {
-        out.serialize_entry(&k, &W(v))?;
-      }
-      out.end()
-    }
-}
-
-
 impl From<Delivery> for Message {
     fn from(d: Delivery) -> Self {
         let p = d.properties;
@@ -146,16 +101,30 @@ impl From<Delivery> for Message {
 
         let mut props = headers.remove("properties").map(amqp_field_table).unwrap_or_else(BTreeMap::new);
         let prop_headers = props.remove("headers").map(amqp_field_table).unwrap_or_else(BTreeMap::new);
+        let properties = Properties {
+            content_type: props.get("content_type").and_then(amqp_str),
+            content_encoding: props.get("content_encoding").and_then(amqp_str),
+            delivery_mode: props.get("delivery_mode").and_then(amqp_u8),
+            priority: props.get("priority").and_then(amqp_u8),
+            correlation_id: props.get("correlation_id").and_then(amqp_str),
+            reply_to: props.get("reply_to").and_then(amqp_str),
+            expiration: props.get("expiration").and_then(amqp_str),
+            message_id: props.get("message_id").and_then(amqp_str),
+            timestamp: props.get("timestamp").and_then(amqp_u64),
+            user_id: props.get("user_id").and_then(amqp_str),
+            app_id: props.get("app_id").and_then(amqp_str),
+            cluster_id: props.get("app_id").and_then(amqp_str),
+        };
 
         Message {
             routing_key: routing_key,
             routed_queues: routed_queues,
-            exchange: d.routing_key, //e.g. publish.exchange_name
+            exchange: d.routing_key,
             redelivered: d.redelivered,
             body: str::from_utf8(&d.data).unwrap().to_string(),
             node: node,
+            properties: properties,
             headers: AMQPValue::FieldTable(prop_headers),
-            //TODO: introduce a wrapper type for these
             received_at: Utc::now(),
             uuid: Uuid::new_v4(),
         }
