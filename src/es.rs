@@ -1,6 +1,7 @@
 use futures::future;
 use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
+use futures::IntoFuture;
 use rmq::Message;
 use rs_es::operations::mapping::*;
 use rs_es::query::Query;
@@ -8,6 +9,8 @@ use rs_es::Client;
 use std::boxed::Box;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
+use std::io;
+use uuid::Uuid;
 
 pub struct Config {
     base_url: String,
@@ -74,33 +77,36 @@ lazy_static! {
 }
 
 pub type Task = Box<Future<Item = (), Error = ()> + Send>;
+pub type IoFuture<A> = Box<Future<Item = A, Error = io::Error> + Send>;
 
+//TODO: reimplement using plain Hyper client
 pub trait MessageSearchService {
     fn write(&self, rx: Receiver<Message>) -> Task;
-    fn init_index(&self) -> Task;
+    fn init_store(&self) -> Task;
+    fn message_for(&self, id: String) -> IoFuture<Message>;
 }
 
-pub struct MessageSearch {
+pub struct MessageStore {
     es_client: Arc<Mutex<Client>>,
     config: Arc<Config>,
 }
 
-impl MessageSearch {
+impl MessageStore {
     pub fn new(config: Config) -> Self {
         let err_msg = format!("Unable to parse Elasticsearch URL {}", config.base_url);
         let es_client = Arc::new(Mutex::new(Client::new(&config.base_url).expect(&err_msg)));
-        MessageSearch {
+        MessageStore {
             es_client: es_client,
             config: Arc::new(config),
         }
     }
 }
 
-impl MessageSearchService for MessageSearch {
+impl MessageSearchService for MessageStore {
     // NOTE: what happens when the mappings change?
     // ES provides a convenient API for that: https://www.elastic.co/guide/en/elasticsearch/reference/2.4/docs-reindex.html
     // perhaps this tool should automatically manage migrations by managing two indices at the same time...
-    fn init_index(&self) -> Task {
+    fn init_store(&self) -> Task {
         let mutex = self.es_client.clone();
         let config = self.config.clone();
 
@@ -147,5 +153,22 @@ impl MessageSearchService for MessageSearch {
             }).collect()
                 .then(|_| Ok(())),
         )
+    }
+
+    fn message_for(&self, id: String) -> IoFuture<Message> {
+        let es_mutex = self.es_client.clone();
+        let config = self.config.clone();
+
+        let mut es_client = es_mutex.lock().unwrap();
+        let result = es_client.get(&config.index, &id).with_doc_type(&config.doc_type).send().map(|r| {
+            if r.found {
+                r.source.unwrap()
+            } else {
+                panic!("failed to retrieve message from elasticsearch... {:?}", r);
+            }
+
+        });
+
+        Box::new(result.map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e)).into_future())
     }
 }

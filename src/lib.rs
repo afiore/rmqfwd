@@ -15,7 +15,9 @@ extern crate lapin_futures as lapin;
 extern crate rs_es;
 extern crate serde;
 extern crate tokio;
+extern crate tokio_codec;
 extern crate uuid;
+extern crate clap;
 
 pub mod es;
 pub mod rmq;
