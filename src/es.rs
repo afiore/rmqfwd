@@ -1,8 +1,8 @@
 use futures::future;
 use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
-use futures::IntoFuture;
-use rmq::Message;
+use futures::stream;
+use rmq::TimestampedMessage;
 use rs_es::operations::mapping::*;
 use rs_es::query::Query;
 use rs_es::Client;
@@ -10,12 +10,46 @@ use std::boxed::Box;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use std::io;
-use uuid::Uuid;
+use url::{Url, ParseError};
+use hyper::{Client as HttpClient};
+use hyper::Request;
+use hyper::Method;
+use hyper::Body;
+use serde_json;
 
+
+#[derive(Debug)]
 pub struct Config {
+    //TODO: add support for TLS
     base_url: String,
     index: String,
     doc_type: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct EsDoc<A> {
+    pub _source: A
+}
+
+trait EsEndpoints {
+  fn message_url(&self, id: Option<String>) -> Result<Url, ParseError>;
+  fn index_url(&self) -> Result<Url, ParseError>;
+}
+
+impl EsEndpoints for Config {
+    fn message_url(&self, id: Option<String>) -> Result<Url, ParseError> {
+       let without_id = self.index_url().and_then(|u| u.join(&format!("{}/", self.doc_type)))?;
+
+       match id {
+          Some(id) =>
+              without_id.join(&format!("{}/", id)),
+           _ => Ok(without_id),
+       }
+    }
+
+    fn index_url(&self) -> Result<Url, ParseError> {
+        Url::parse(&self.base_url).and_then(|u| u.join(&format!("{}/", &self.index)))
+    }
 }
 
 impl Default for Config {
@@ -81,9 +115,9 @@ pub type IoFuture<A> = Box<Future<Item = A, Error = io::Error> + Send>;
 
 //TODO: reimplement using plain Hyper client
 pub trait MessageSearchService {
-    fn write(&self, rx: Receiver<Message>) -> Task;
+    fn write(&self, rx: Receiver<TimestampedMessage>) -> Task;
     fn init_store(&self) -> Task;
-    fn message_for(&self, id: String) -> IoFuture<Message>;
+    fn message_for(&self, id: String) -> IoFuture<Option<TimestampedMessage>>;
 }
 
 pub struct MessageStore {
@@ -136,39 +170,64 @@ impl MessageSearchService for MessageStore {
         }))
     }
 
-    fn write(&self, rx: Receiver<Message>) -> Task {
-        let es_mutex = self.es_client.clone();
-        let config = self.config.clone();
+    fn write(&self, rx: Receiver<TimestampedMessage>) -> Task {
+        //TODO: handle error
+        let ep_url = self.config.message_url(None).unwrap().to_string();
 
         Box::new(
             rx.and_then(move |msg| {
-                let mut es_client = es_mutex.lock().unwrap();
-                let mut indexer = es_client.index(&config.index, &config.doc_type);
+                let client = HttpClient::new();
+                let body = Body::wrap_stream(stream::once(serde_json::to_string(&msg)));
+                let mut req = Request::builder();
 
-                indexer
-                    .with_doc(&msg)
-                    .send()
-                    .map(|_| debug!("writing message to Elasticsearch: {:?}", msg))
-                    .map_err(|err| error!("ES returned an error: {}", err.description()))
-            }).collect()
-                .then(|_| Ok(())),
-        )
+                req.method(Method::POST).uri(ep_url.clone());
+
+                client
+                    .request(req.body(body).expect(&format!("couldn't build HTTP request {:?}", msg)))
+                    .map_err(|err| error!("ES connection error: {}", err.description()))
+                    .and_then(|res| {
+                        if res.status().is_success() {
+                            Ok(())
+                        } else {
+                            error!("Elasticsearch responded with non successful status code: {:?}", res);
+                            Err(())
+                        }
+                    })
+
+            }).for_each(|_| Ok(())))
     }
 
-    fn message_for(&self, id: String) -> IoFuture<Message> {
-        let es_mutex = self.es_client.clone();
-        let config = self.config.clone();
+    fn message_for(&self, id: String) -> IoFuture<Option<TimestampedMessage>> {
+        let client = HttpClient::new();
+        let url = self.config.message_url(Some(id)).unwrap();
+        let req =
+            Request::builder()
+              .method(Method::GET)
+              .uri(url.to_string())
+              .body(Body::empty())
+              .expect("couldn't build a request!");
 
-        let mut es_client = es_mutex.lock().unwrap();
-        let result = es_client.get(&config.index, &id).with_doc_type(&config.doc_type).send().map(|r| {
-            if r.found {
-                r.source.unwrap()
+        debug!("sending request: {:?}", req);
+
+        Box::new(client.request(req).and_then(|res| {
+          debug!("got a response: {:?}", res);
+
+          let is_success = res.status().is_success();
+          res.into_body().concat2().map(move |x| (is_success, x))
+        }).and_then(|(is_success, body)| {
+//            let v = body.to_vec();
+//            let s = String::from_utf8_lossy(&v).to_string();
+//            println!("got a body {}", s);
+
+            if is_success {
+                let doc: EsDoc<TimestampedMessage> = serde_json::from_slice(&body).unwrap();
+                Ok(Some(doc._source))
             } else {
-                panic!("failed to retrieve message from elasticsearch... {:?}", r);
+                Ok(None)
             }
-
-        });
-
-        Box::new(result.map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e)).into_future())
+           //TODO: use a more sane way to handle errors!
+        }).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e)))
     }
 }
+
+

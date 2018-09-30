@@ -16,7 +16,21 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::str;
 use tokio;
 use tokio::net::TcpStream;
-use uuid::Uuid;
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct TimestampedMessage {
+  pub received_at: DateTime<Utc>,
+  pub message: Message
+}
+
+impl TimestampedMessage {
+    pub fn now(msg: Message) -> TimestampedMessage {
+       TimestampedMessage {
+         message: msg,
+         received_at: Utc::now(),
+       }
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Message {
@@ -28,8 +42,6 @@ pub struct Message {
     pub properties: Properties,
     pub node: Option<String>,
     pub routed_queues: Vec<String>,
-    pub received_at: DateTime<Utc>,
-    pub uuid: Uuid,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -125,8 +137,6 @@ impl From<Delivery> for Message {
             node: node,
             properties: properties,
             headers: AMQPValue::FieldTable(prop_headers),
-            received_at: Utc::now(),
-            uuid: Uuid::new_v4(),
         }
     }
 }
@@ -164,7 +174,7 @@ impl Default for Config {
 //NOTE: couldn't return a Box<Future<...>>, as compiler complained about 'static lifetime
 pub fn bind_and_consume(
     config: Config,
-    tx: Sender<Message>,
+    tx: Sender<TimestampedMessage>,
 ) -> impl Future<Item = (), Error = io::Error> {
     let queue_name = config.queue_name.clone();
     let exchange = config.exchange.clone();
@@ -224,7 +234,7 @@ pub fn bind_and_consume(
                                 debug!("got message: {:?}", delivery);
                                 let msg = Message::from(delivery);
                                 let msg_json = serde_json::to_string(&msg).unwrap();
-                                tx.send(msg).expect(&format!(
+                                tx.send(TimestampedMessage::now(msg)).expect(&format!(
                                     "failed to send message through channel: {}",
                                     msg_json
                                 ));

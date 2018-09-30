@@ -17,5 +17,6 @@ rs-es = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 lazy_static = "1"
 maplit = "1" 
-uuid = { version = "0.6", features = ["serde", "v4"] }
 clap = "2"
+hyper = "0.12"
+url = "1.7"

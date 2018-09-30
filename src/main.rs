@@ -6,17 +6,14 @@ extern crate log;
 extern crate rmqfwd;
 extern crate tokio;
 extern crate tokio_codec;
-extern crate uuid;
 
 use clap::{App, Arg, SubCommand};
-use futures::future;
 use futures::prelude::*;
-use futures::stream;
 use futures::sync::mpsc;
 use rmqfwd::es;
 use rmqfwd::es::{MessageSearchService, MessageStore};
 use rmqfwd::rmq;
-use rmqfwd::rmq::{Config, Message};
+use rmqfwd::rmq::{Config, TimestampedMessage};
 use std::io::BufReader;
 use std::io::Write;
 use tokio::fs::file::File;
@@ -68,7 +65,7 @@ fn main() {
 
     match matches.subcommand_name() {
         Some("trace") => {
-            let (tx, rx) = mpsc::channel::<Message>(5);
+            let (tx, rx) = mpsc::channel::<TimestampedMessage>(5);
             let msg_store = MessageStore::new(es::Config::default());
 
             let mut rt = Runtime::new().unwrap();
@@ -91,13 +88,14 @@ fn main() {
             let x = Box::new(File::open(path.to_string()))
                 .and_then(|file| {
                     let reader = BufReader::new(file);
-                    //TODO: use Stream.forward(sink)
+                    //TODO: avoid move here
                     io::lines(reader).and_then(move |doc_id| {
-                        msg_store.message_for(doc_id)
+                        let id = doc_id.clone();
+                        msg_store.message_for(doc_id).map(|maybe_doc| (id, maybe_doc))
                     }).collect()
-                }); //TODO: sync to rabbit publisher...
+                }); //TODO: sink into rabbit publisher...
 
-            let result: Result<Vec<Message>, io::Error> = rt.block_on(x);
+            let result: Result<Vec<(String, Option<TimestampedMessage>)>, io::Error> = rt.block_on(x);
 
             match result {
                 Err(err) => {
@@ -106,8 +104,12 @@ fn main() {
 
                 }
                 Ok(docs) => {
-                    for doc in docs {
-                        println!("got a message: {:?}", doc);
+                    for (doc_id, maybe_doc) in docs {
+                        if let Some(doc) = maybe_doc {
+                           println!("got a message: {:?}", doc);
+                        } else {
+                           eprintln!("couldn't find a stored message with id: {}", doc_id);
+                        }
                     }
                 }
             }
