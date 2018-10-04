@@ -5,7 +5,6 @@ use rmq::TimestampedMessage;
 use std::boxed::Box;
 use failure::{Error};
 use std::sync::Arc;
-use std::collections::HashMap;
 use url::{Url, ParseError};
 use serde::de::DeserializeOwned;
 use hyper::Client;
@@ -13,9 +12,9 @@ use hyper::client::HttpConnector;
 use hyper::Request;
 use hyper::Method;
 use hyper::Body;
+use hyper::Chunk;
 use serde_json;
 
-pub type Mappings<'s> = HashMap<&'s str, HashMap<&'s str, HashMap<&'s str, &'s str>>>;
 pub type Task = Box<Future<Item = (), Error = Error> + Send>;
 pub type IoFuture<A> = Box<Future<Item = A, Error = Error> + Send>;
 
@@ -31,10 +30,10 @@ pub struct Config {
 pub struct EsDoc<A> {
     pub _source: A
 }
-
 trait EsEndpoints {
   fn message_url(&self, id: Option<String>) -> Result<Url, ParseError>;
   fn index_url(&self) -> Result<Url, ParseError>;
+  fn mapping_url(&self) -> Result<Url, ParseError>;
 }
 
 impl EsEndpoints for Config {
@@ -42,14 +41,19 @@ impl EsEndpoints for Config {
        let without_id = self.index_url().and_then(|u| u.join(&format!("{}/", self.doc_type)))?;
 
        match id {
-          Some(id) =>
-              without_id.join(&format!("{}/", id)),
+          Some(id) => without_id.join(&format!("{}/", id)),
            _ => Ok(without_id),
        }
     }
 
     fn index_url(&self) -> Result<Url, ParseError> {
         Url::parse(&self.base_url).and_then(|u| u.join(&format!("{}/", &self.index)))
+    }
+
+    fn mapping_url(&self) -> Result<Url, ParseError> {
+        let index_url = self.index_url()?;
+        let mapping_url = index_url.join(&format!("_mapping/{}/", &self.doc_type))?;
+        Ok(mapping_url)
     }
 }
 
@@ -61,43 +65,6 @@ impl Default for Config {
             doc_type: "message".to_string(),
         }
     }
-}
-
-lazy_static! {
-    static ref MAPPINGS: Mappings<'static> = {
-        hashmap! {
-            "message" => hashmap! {
-                "exchange" => hashmap! {
-                    "type" => "string",
-                    "index" => "not_analyzed",
-                },
-                "routing_key" => hashmap! {
-                    "type" => "string",
-                    "index" => "not_analyzed",
-                },
-                "received_at" => hashmap! {
-                    "type" => "date",
-                    "index" => "not_analyzed",
-                },
-                "redelivered" => hashmap! {
-                    "type" => "boolean",
-                    "index" => "not_analyzed",
-                },
-                "routing_key" => hashmap! {
-                    "type" => "string",
-                    "index" => "not_analyzed",
-                },
-                "uuid" => hashmap! {
-                    "type" => "string",
-                    "index" => "not_analyzed",
-                },
-                "headers" => hashmap! {
-                  "type" => "object",
-                  "enabled" => "false"
-                }
-            },
-        }
-    };
 }
 
 
@@ -120,9 +87,19 @@ impl MessageStore {
     }
 }
 
-fn expect<A>(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=A, Error=Error> + Send>
+
+fn expect_ok(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=(), Error=Error> + Send> {
+    handle_response(client, req, {|_| Ok(())})
+}
+
+fn expect<A: DeserializeOwned + Send + 'static>(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=A, Error=Error> + Send> {
+    handle_response(client, req, |s| serde_json::from_slice(s).map_err(|e| e.into()))
+}
+
+fn handle_response<A, F>(client: &Client<HttpConnector, Body>, req: Request<Body>, handle_body: F) -> Box<Future<Item=A, Error=Error> + Send>
   where
-    A: DeserializeOwned + 'static + Send {
+    A: DeserializeOwned + Send + 'static,
+    F: Fn(&Chunk) -> Result<A, Error> + Send + Sync + 'static {
     Box::new(client
         .request(req)
         .and_then(|res| {
@@ -130,13 +107,13 @@ fn expect<A>(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Fu
             res.into_body().concat2().map(move |chunks| (status, chunks))
         })
         .map_err(|e| e.into())
-        .and_then(|(status, body)| {
+        .and_then(move |(status, body)| {
             if status.is_success() {
-                let users = serde_json::from_slice(&body)?;
-                Ok(users)
+                let entity = handle_body(&body)?;
+                Ok(entity)
             } else {
-                let s = String::from_utf8_lossy(&body.to_vec()).to_string();
-                Err(format_err!("Elasticsearch responded with non successful status code: {:?}. Message: {}", status, s))
+                let body = String::from_utf8_lossy(&body.to_vec()).to_string();
+                Err(format_err!("Elasticsearch responded with non successful status code: {:?}. Message: {}", status, body))
             }
         }))
 }
@@ -147,8 +124,62 @@ impl MessageSearchService for MessageStore {
     // ES provides a convenient API for that: https://www.elastic.co/guide/en/elasticsearch/reference/2.4/docs-reindex.html
     // perhaps this tool should automatically manage migrations by managing two indices at the same time...
     fn init_store(&self) -> Task {
-        let _config = self.config.clone();
-        unimplemented!()
+        let client = Client::new();
+        let index_url = self.config.index_url().unwrap();
+        let mappings_url = self.config.mapping_url().unwrap();
+
+        let req =
+            Request::builder()
+              .method(Method::POST)
+              .uri(index_url.to_string())
+              .body(Body::empty())
+              .expect("couldn't build a request!");
+
+        Box::new(expect_ok(&client, req).and_then(move |_|{
+            let mappings: serde_json::Value = json!({
+                "properties": {
+                  "received_at": {
+                    "type": "date",
+                    "index": "not_analyzed"
+                  },
+                  "message": {
+                    "properties": {
+                      "exchange": {
+                        "type": "string",
+                        "index": "not_analyzed"
+                      },
+                      "routing_key": {
+                        "type": "string",
+                        "index": "not_analyzed"
+                      },
+                      "redelivered": {
+                        "type": "boolean",
+                        "index": "not_analyzed"
+                      },
+                      "uuid": {
+                        "type": "string",
+                        "index": "not_analyzed"
+                      },
+                      "headers": {
+                        "type": "object",
+                        "enabled": "false"
+                      }
+                    }
+                  }
+                }
+              });
+
+            let req =
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri(mappings_url.to_string())
+                    .body(Body::wrap_stream(stream::once(serde_json::to_string(&mappings))))
+                    .expect("couldn't build a request!");
+
+            info!("sending request: {:?}", req);
+
+            expect_ok(&client, req)
+        }))
     }
 
 
@@ -163,18 +194,18 @@ impl MessageSearchService for MessageStore {
                 let mut req = Request::builder();
 
                 req.method(Method::POST).uri(ep_url.clone());
-                expect::<()>(&client, req.body(body).expect(&format!("couldn't build HTTP request {:?}", msg)))
+                expect_ok(&client, req.body(body).expect(&format!("couldn't build HTTP request {:?}", msg)))
 
             }).for_each(|_| Ok(())))
     }
 
     fn message_for(&self, id: String) -> IoFuture<Option<TimestampedMessage>> {
         let client = Client::new();
-        let url = self.config.message_url(Some(id)).unwrap();
+        let index_url = self.config.message_url(Some(id)).unwrap();
         let req =
             Request::builder()
               .method(Method::GET)
-              .uri(url.to_string())
+              .uri(index_url.to_string())
               .body(Body::empty())
               .expect("couldn't build a request!");
 

@@ -171,18 +171,17 @@ impl Default for Config {
     }
 }
 
-//NOTE: couldn't return a Box<Future<...>>, as compiler complained about 'static lifetime
 pub fn bind_and_consume(
     config: Config,
     tx: Sender<TimestampedMessage>,
-) -> impl Future<Item = (), Error = io::Error> {
+) -> Box<Future<Item = (), Error = io::Error> + Send> {
     let queue_name = config.queue_name.clone();
     let exchange = config.exchange.clone();
     let addr = config.address();
     //TODO: can we reuse a runtime?
     let mut tx = tx.clone().wait();
 
-    TcpStream::connect(&addr)
+    Box::new(TcpStream::connect(&addr)
         .and_then(|stream| {
             // connect() returns a future of an AMQP Client
             // that resolves once the handshake is done
@@ -243,5 +242,5 @@ pub fn bind_and_consume(
                             })
                         })
                 })
-        })
+        }))
 }

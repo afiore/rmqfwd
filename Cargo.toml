@@ -15,7 +15,6 @@ log = "0.4"
 env_logger = "0.5"
 chrono = { version = "0.4", features = ["serde"] }
 lazy_static = "1"
-maplit = "1" 
 clap = "2"
 hyper = "0.12"
 url = "1.7"

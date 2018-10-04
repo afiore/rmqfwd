@@ -82,7 +82,6 @@ fn main() {
         Some("replay") => {
             let matches = matches.subcommand_matches("replay").unwrap();
             let msg_store = MessageStore::new(es::Config::default());
-
             let _routing_key = matches.value_of("routing-key");
             let _exchange = matches.value_of("exchange");
             let path = matches.value_of("ids-file").unwrap();
