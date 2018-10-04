@@ -1,22 +1,23 @@
-use futures::future;
 use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
 use futures::stream;
 use rmq::TimestampedMessage;
-use rs_es::operations::mapping::*;
-use rs_es::query::Query;
-use rs_es::Client;
 use std::boxed::Box;
-use std::error::Error;
-use std::sync::{Arc, Mutex};
-use std::io;
+use failure::{Error};
+use std::sync::Arc;
+use std::collections::HashMap;
 use url::{Url, ParseError};
-use hyper::{Client as HttpClient};
+use serde::de::DeserializeOwned;
+use hyper::Client;
+use hyper::client::HttpConnector;
 use hyper::Request;
 use hyper::Method;
 use hyper::Body;
 use serde_json;
 
+pub type Mappings<'s> = HashMap<&'s str, HashMap<&'s str, HashMap<&'s str, &'s str>>>;
+pub type Task = Box<Future<Item = (), Error = Error> + Send>;
+pub type IoFuture<A> = Box<Future<Item = A, Error = Error> + Send>;
 
 #[derive(Debug)]
 pub struct Config {
@@ -63,18 +64,7 @@ impl Default for Config {
 }
 
 lazy_static! {
-    //TODO: this is blindly copy-pasted from rs_es tests. Undestand and review this settings!
-    static ref SETTINGS: Settings = Settings {
-            number_of_shards: 1,
-            analysis: Analysis {
-                filter: json! ({}).as_object().expect("by construction 'autocomplete_filter' should be a map").clone(),
-                analyzer: json! ({}).as_object().expect("by construction 'autocomplete' should be a map").clone()
-            }
-        };
-}
-
-lazy_static! {
-    static ref MAPPINGS: Mapping<'static> = {
+    static ref MAPPINGS: Mappings<'static> = {
         hashmap! {
             "message" => hashmap! {
                 "exchange" => hashmap! {
@@ -110,8 +100,6 @@ lazy_static! {
     };
 }
 
-pub type Task = Box<Future<Item = (), Error = ()> + Send>;
-pub type IoFuture<A> = Box<Future<Item = A, Error = io::Error> + Send>;
 
 //TODO: reimplement using plain Hyper client
 pub trait MessageSearchService {
@@ -121,84 +109,67 @@ pub trait MessageSearchService {
 }
 
 pub struct MessageStore {
-    es_client: Arc<Mutex<Client>>,
     config: Arc<Config>,
 }
 
 impl MessageStore {
     pub fn new(config: Config) -> Self {
-        let err_msg = format!("Unable to parse Elasticsearch URL {}", config.base_url);
-        let es_client = Arc::new(Mutex::new(Client::new(&config.base_url).expect(&err_msg)));
         MessageStore {
-            es_client: es_client,
             config: Arc::new(config),
         }
     }
 }
+
+fn expect<A>(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=A, Error=Error> + Send>
+  where
+    A: DeserializeOwned + 'static + Send {
+    Box::new(client
+        .request(req)
+        .and_then(|res| {
+            let status = res.status();
+            res.into_body().concat2().map(move |chunks| (status, chunks))
+        })
+        .map_err(|e| e.into())
+        .and_then(|(status, body)| {
+            if status.is_success() {
+                let users = serde_json::from_slice(&body)?;
+                Ok(users)
+            } else {
+                let s = String::from_utf8_lossy(&body.to_vec()).to_string();
+                Err(format_err!("Elasticsearch responded with non successful status code: {:?}. Message: {}", status, s))
+            }
+        }))
+}
+
 
 impl MessageSearchService for MessageStore {
     // NOTE: what happens when the mappings change?
     // ES provides a convenient API for that: https://www.elastic.co/guide/en/elasticsearch/reference/2.4/docs-reindex.html
     // perhaps this tool should automatically manage migrations by managing two indices at the same time...
     fn init_store(&self) -> Task {
-        let mutex = self.es_client.clone();
-        let config = self.config.clone();
-
-        Box::new(future::lazy(move || {
-            //TODO: handle poisoning?
-            let mut es_client = mutex.lock().unwrap();
-            let result = es_client
-                .count_query()
-                .with_indexes(&[&config.index])
-                .with_query(&Query::build_match_all().build())
-                .send()
-                .map(|_| ())
-                .map_err(|_| ());
-
-            if result.is_ok() {
-                info!("index {} already exists", &config.index);
-                Ok(())
-            } else {
-                let mut mapping_op = MappingOperation::new(&mut es_client, &config.index);
-                mapping_op
-                    .with_settings(&SETTINGS)
-                    .with_mapping(&MAPPINGS)
-                    .send()
-                    .map(|_| ())
-                    .map_err(|err| error!("Couldn't initialise index: {:?}", err))
-            }
-        }))
+        let _config = self.config.clone();
+        unimplemented!()
     }
+
 
     fn write(&self, rx: Receiver<TimestampedMessage>) -> Task {
         //TODO: handle error
         let ep_url = self.config.message_url(None).unwrap().to_string();
 
         Box::new(
-            rx.and_then(move |msg| {
-                let client = HttpClient::new();
+            rx.map_err(|_| format_err!("failed to receive message")).and_then(move |msg| {
+                let client = Client::new();
                 let body = Body::wrap_stream(stream::once(serde_json::to_string(&msg)));
                 let mut req = Request::builder();
 
                 req.method(Method::POST).uri(ep_url.clone());
-
-                client
-                    .request(req.body(body).expect(&format!("couldn't build HTTP request {:?}", msg)))
-                    .map_err(|err| error!("ES connection error: {}", err.description()))
-                    .and_then(|res| {
-                        if res.status().is_success() {
-                            Ok(())
-                        } else {
-                            error!("Elasticsearch responded with non successful status code: {:?}", res);
-                            Err(())
-                        }
-                    })
+                expect::<()>(&client, req.body(body).expect(&format!("couldn't build HTTP request {:?}", msg)))
 
             }).for_each(|_| Ok(())))
     }
 
     fn message_for(&self, id: String) -> IoFuture<Option<TimestampedMessage>> {
-        let client = HttpClient::new();
+        let client = Client::new();
         let url = self.config.message_url(Some(id)).unwrap();
         let req =
             Request::builder()
@@ -207,26 +178,8 @@ impl MessageSearchService for MessageStore {
               .body(Body::empty())
               .expect("couldn't build a request!");
 
-        debug!("sending request: {:?}", req);
+        expect(&client, req)
 
-        Box::new(client.request(req).and_then(|res| {
-          debug!("got a response: {:?}", res);
-
-          let is_success = res.status().is_success();
-          res.into_body().concat2().map(move |x| (is_success, x))
-        }).and_then(|(is_success, body)| {
-//            let v = body.to_vec();
-//            let s = String::from_utf8_lossy(&v).to_string();
-//            println!("got a body {}", s);
-
-            if is_success {
-                let doc: EsDoc<TimestampedMessage> = serde_json::from_slice(&body).unwrap();
-                Ok(Some(doc._source))
-            } else {
-                Ok(None)
-            }
-           //TODO: use a more sane way to handle errors!
-        }).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e)))
     }
 }
 

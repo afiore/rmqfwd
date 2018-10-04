@@ -1,13 +1,14 @@
 extern crate clap;
 extern crate env_logger;
 extern crate futures;
-#[macro_use]
-extern crate log;
+#[macro_use] extern crate log;
+extern crate failure;
 extern crate rmqfwd;
 extern crate tokio;
 extern crate tokio_codec;
 
 use clap::{App, Arg, SubCommand};
+use failure::Error;
 use futures::prelude::*;
 use futures::sync::mpsc;
 use rmqfwd::es;
@@ -69,9 +70,12 @@ fn main() {
             let msg_store = MessageStore::new(es::Config::default());
 
             let mut rt = Runtime::new().unwrap();
+
             rt.block_on(msg_store.init_store())
                 .expect("MessageStore.init_index() failed!");
-            rt.spawn(msg_store.write(rx));
+
+            rt.spawn(msg_store.write(rx).map_err(|_| ()));
+
             rt.block_on(rmq::bind_and_consume(Config::default(), tx))
                 .expect("runtime error!");
         }
@@ -85,17 +89,17 @@ fn main() {
 
             let mut rt = Runtime::new().unwrap();
 
-            let x = Box::new(File::open(path.to_string()))
+            let x = Box::new(File::open(path.to_string()).map_err(|e| e.into()))
                 .and_then(|file| {
                     let reader = BufReader::new(file);
                     //TODO: avoid move here
-                    io::lines(reader).and_then(move |doc_id| {
+                    io::lines(reader).map_err(|e| e.into()).and_then(move |doc_id| {
                         let id = doc_id.clone();
                         msg_store.message_for(doc_id).map(|maybe_doc| (id, maybe_doc))
                     }).collect()
                 }); //TODO: sink into rabbit publisher...
 
-            let result: Result<Vec<(String, Option<TimestampedMessage>)>, io::Error> = rt.block_on(x);
+            let result: Result<Vec<(String, Option<TimestampedMessage>)>, Error> = rt.block_on(x);
 
             match result {
                 Err(err) => {
