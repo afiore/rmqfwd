@@ -7,14 +7,25 @@ use tokio::fs::file::File;
 use serde_json;
 
 
-trait Export {
-   fn export_message(msg: TimestampedMessage, target: PathBuf) -> Box<Future<Item=(), Error=Error> + Send>;
+pub trait Export {
+   fn export_message(&self, msg: TimestampedMessage, target: PathBuf) -> Box<Future<Item=(), Error=Error> + Send>;
 }
 
-pub struct Exporter;
+pub struct Exporter {
+    pretty_print: bool
+}
+
+impl Exporter {
+    pub fn new(pretty_print: bool) -> Self {
+        Exporter {
+            pretty_print: pretty_print
+        }
+    }
+}
 
 impl Export for Exporter {
-    fn export_message(msg: TimestampedMessage, target: PathBuf) -> Box<Future<Item=(), Error=Error> + Send> {
+    fn export_message(&self, msg: TimestampedMessage, target: PathBuf) -> Box<Future<Item=(), Error=Error> + Send> {
+        let pretty_print = self.pretty_print.clone();
         Box::new(future::lazy(|| {
             if target.exists() {
                 Err(format_err!("file {:?} already exists!", target.display()))
@@ -24,7 +35,13 @@ impl Export for Exporter {
         }).and_then(|target| {
            File::create(target).map_err(|e| e.into())
         }).and_then(move |file| {
-            serde_json::to_writer(file, &msg).map_err(|e| e.into())
+            let result = if pretty_print {
+                serde_json::to_writer_pretty(file, &msg)
+            } else {
+                serde_json::to_writer(file, &msg)
+            };
+
+            result.map_err(|e| e.into())
 
         }))
     }

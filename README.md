@@ -2,32 +2,29 @@
 
 Rabbitmq sidecar program to listen to messages in the `amq.rabbitmq.trace` exchange and forward them to Elasticsearch
 
-## Setup RabbitMQ:
+**Warning:** this project is not feature complete, and is not recommended to use in production!
 
-Initialise a rabbitmq instance
-
-```
-docker run -p 5672:5672 -p 15672:15672 -d --hostname my-rabbit --name some-rabbit -e RABBITMQ_ERLANG_COOKIE='secret' rabbitmq:3.6.10-management
-```
-
-Then enable the [Firehose tracer](https://www.rabbitmq.com/firehose.html) functionality by executing the following
+## Usage
 
 ```
-docker run -it --rm --link some-rabbit:my-rabbit -e RABBITMQ_ERLANG_COOKIE='secret' rabbitmq:3 bash
-rabbitmqctl --erlang-cookie=secret -n rabbit@my-rabbit trace_on
+rmqfwd 0.1.0                                                                                                                                                                                
+USAGE:
+    rmqfwd [SUBCOMMAND]
+
+FLAGS:
+    -h, --help       Prints help information
+    -V, --version    Prints version information
+
+SUBCOMMANDS:
+    export    fetch a message from the store and write it to the file system
+    help      Prints this message or the help of the given subcommand(s)
+    replay    replay a set of message ids
+    trace     bind a queue to 'amq.rabbitmq.trace' and persists received messages into the message store 
 ```
 
-Finally, verify that tracing is enabled by inspecting the main vhost throught the Rabbit Management REST API:
+## Setup
 
-```
-curl -u guest:guest http://localhost:15672/api/vhosts | jq '.[0].tracing'
-```
+You can setup a development enviornment by running `docker-compose up` in the project directory. This will setup the following:
 
-You should see the value `true` printed to standard output!
-
-
-## Setup Elasticsearch:
-
-```
-docker run -p 9200:9200 -p 9300:9300 -e "discovery.type=single-node" elasticsearch:2.4.6
-```
+- a Rabbitmq instance with [Firehose tracer](https://www.rabbitmq.com/firehose.html) enabled, managment console, and guest user access.
+- an Elasticsearch 2.5 instance

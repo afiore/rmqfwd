@@ -1,11 +1,12 @@
-extern crate clap;
 extern crate env_logger;
 extern crate futures;
-#[macro_use] extern crate log;
-extern crate failure;
 extern crate rmqfwd;
 extern crate tokio;
 extern crate tokio_codec;
+
+#[macro_use] extern crate log;
+#[macro_use] extern crate failure;
+#[macro_use] extern crate clap;
 
 use clap::{App, Arg, SubCommand};
 use failure::Error;
@@ -15,15 +16,17 @@ use rmqfwd::es;
 use rmqfwd::es::{MessageSearchService, MessageStore};
 use rmqfwd::rmq;
 use rmqfwd::rmq::{Config, TimestampedMessage};
+use rmqfwd::fs::*;
 use std::io::BufReader;
 use std::io::Write;
 use tokio::fs::file::File;
-//TODO: use tokio::fs
 use tokio::io;
 use tokio::runtime::Runtime;
 
 fn main() {
     env_logger::init();
+
+
     let arg_exchange =
         Arg::with_name("exchange")
             .required(true)
@@ -45,14 +48,40 @@ fn main() {
             .short("k")
             .long_help("the routing key to use");
 
+    let arg_msg_id =
+        Arg::with_name("message-id")
+            .index(1)
+            .required(true)
+            .takes_value(true)
+            .long_help("the id of the message to export");
 
-    let app = App::new("rmqfwd")
-        .version("0.1")
-        .author("Andrea Fiore")
+    let arg_export_target =
+        Arg::with_name("target")
+            .index(2)
+            .required(true)
+            .takes_value(true)
+            .long_help("the export target file");
+
+    let arg_pretty_print =
+        Arg::with_name("pretty-print")
+            .short("p")
+            .required(false)
+            .takes_value(false)
+            .long_help("pretty print message");
+
+    let app = App::new(crate_name!())
+        .version(crate_version!())
+        .author(crate_authors!())
         .subcommand(
             SubCommand
             ::with_name("trace")
                 .about("bind a queue to 'amq.rabbitmq.trace' and persists received messages into the message store "))
+        .subcommand(
+            SubCommand
+            ::with_name("export")
+                .about("fetch a message from the store and write it to the file system")
+                .args(&[arg_msg_id, arg_export_target, arg_pretty_print])
+        )
         .subcommand(
             SubCommand
             ::with_name("replay")
@@ -78,6 +107,29 @@ fn main() {
 
             rt.block_on(rmq::bind_and_consume(Config::default(), tx))
                 .expect("runtime error!");
+        }
+        Some("export") => {
+            let matches = matches.subcommand_matches("export").unwrap();
+            let msg_id = matches.value_of("message-id").unwrap();
+            let target = matches.value_of_os("target").unwrap().clone().into();
+            let pretty_print = value_t!(matches, "pretty-print", bool).unwrap_or(false);
+
+            let msg_store = MessageStore::new(es::Config::default());
+
+            let mut rt = Runtime::new().unwrap();
+
+            let export = Box::new(msg_store.message_for(msg_id.clone().to_string()).and_then(move |maybe_msg|
+              maybe_msg.ok_or(format_err!("couldn't find a message with id"))
+            ).and_then(move |msg| Exporter::new(pretty_print).export_message(msg, target)));
+
+            let result = rt.block_on(export);
+            match result {
+                Ok(_) => (),
+                Err(e) => {
+                    error!("Couldn't export the message {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
         Some("replay") => {
             let matches = matches.subcommand_matches("replay").unwrap();

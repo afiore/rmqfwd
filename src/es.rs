@@ -9,6 +9,7 @@ use url::{Url, ParseError};
 use serde::de::DeserializeOwned;
 use hyper::Client;
 use hyper::client::HttpConnector;
+use hyper::StatusCode;
 use hyper::Request;
 use hyper::Method;
 use hyper::Body;
@@ -88,18 +89,43 @@ impl MessageStore {
 }
 
 
-fn expect_ok(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=(), Error=Error> + Send> {
-    handle_response(client, req, {|_| Ok(())})
+fn http_err<A: DeserializeOwned + Send + 'static>(status: &StatusCode, body: &Chunk) -> Result<A, Error> {
+    let body = String::from_utf8_lossy(&body.to_vec()).to_string();
+    Err(format_err!("Elasticsearch responded with non successful status code: {:?}. Message: {}", status, body))
 }
 
-fn expect<A: DeserializeOwned + Send + 'static>(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=A, Error=Error> + Send> {
-    handle_response(client, req, |s| serde_json::from_slice(s).map_err(|e| e.into()))
+fn expect_ok(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=(), Error=Error> + Send> {
+    handle_response(client, req, |status_code, s| {
+        match status_code {
+            _ if status_code.is_success() => Ok(()),
+            _ => http_err(&status_code, &s),
+        }
+    })
+}
+
+fn expect_option<A: DeserializeOwned + Send + 'static>(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=Option<A>, Error=Error> + Send> {
+    handle_response(client, req, |status_code, s| {
+        match status_code {
+            _ if status_code.is_success() => serde_json::from_slice(s).map(|a| Some(a)).map_err(|e| e.into()),
+            _ if status_code.as_u16() == 404 => Ok(None),
+            _ => http_err(&status_code, &s),
+        }
+    })
+}
+
+fn _expect<A: DeserializeOwned + Send + 'static>(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=A, Error=Error> + Send> {
+    handle_response(client, req, |status_code, s| {
+        match status_code {
+            _ if status_code.is_success() => serde_json::from_slice(s).map_err(|e| e.into()),
+            _ => http_err(&status_code, &s),
+        }
+    })
 }
 
 fn handle_response<A, F>(client: &Client<HttpConnector, Body>, req: Request<Body>, handle_body: F) -> Box<Future<Item=A, Error=Error> + Send>
   where
     A: DeserializeOwned + Send + 'static,
-    F: Fn(&Chunk) -> Result<A, Error> + Send + Sync + 'static {
+    F: Fn(&StatusCode, &Chunk) -> Result<A, Error> + Send + Sync + 'static {
     Box::new(client
         .request(req)
         .and_then(|res| {
@@ -108,13 +134,7 @@ fn handle_response<A, F>(client: &Client<HttpConnector, Body>, req: Request<Body
         })
         .map_err(|e| e.into())
         .and_then(move |(status, body)| {
-            if status.is_success() {
-                let entity = handle_body(&body)?;
-                Ok(entity)
-            } else {
-                let body = String::from_utf8_lossy(&body.to_vec()).to_string();
-                Err(format_err!("Elasticsearch responded with non successful status code: {:?}. Message: {}", status, body))
-            }
+            handle_body(&status, &body)
         }))
 }
 
@@ -209,7 +229,7 @@ impl MessageSearchService for MessageStore {
               .body(Body::empty())
               .expect("couldn't build a request!");
 
-        expect(&client, req)
+        Box::new(expect_option::<EsDoc<TimestampedMessage>>(&client, req).map(|maybe_doc| maybe_doc.map(|doc| doc._source)))
 
     }
 }

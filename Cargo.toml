@@ -1,7 +1,7 @@
 [package]
 name = "rmqfwd"
 version = "0.1.0"
-authors = ["andrfior <andrea.giulio.fiore@gmail.com>"]
+authors = ["Andrea Fiore <andrea.giulio.fiore@gmail.com>"]
 
 [dependencies]
 lapin-futures = "^0.13"
