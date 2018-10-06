@@ -118,15 +118,15 @@ fn main() {
 
             let mut rt = Runtime::new().unwrap();
 
-            let export = Box::new(msg_store.message_for(msg_id.clone().to_string()).and_then(move |maybe_msg|
-              maybe_msg.ok_or(format_err!("couldn't find a message with id"))
+            let export = Box::new(msg_store.message_for(msg_id.to_string()).and_then(|maybe_msg|
+              maybe_msg.ok_or(format_err!("couldn't find a message with the supplied id"))
             ).and_then(move |msg| Exporter::new(pretty_print).export_message(msg, target)));
 
             let result = rt.block_on(export);
             match result {
                 Ok(_) => (),
                 Err(e) => {
-                    error!("Couldn't export the message {}", e);
+                    error!("Failed to export: {}", e);
                     std::process::exit(1);
                 }
             }

@@ -16,3 +16,12 @@ extern crate clap;
 pub mod es;
 pub mod rmq;
 pub mod fs;
+
+
+use chrono::prelude::*;
+
+pub enum TimeRange {
+    StartEnd { start: DateTime<Utc>, end: DateTime<Utc> },
+    Since(DateTime<Utc>),
+    Until(DateTime<Utc>),
+}

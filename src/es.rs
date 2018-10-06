@@ -2,11 +2,13 @@ use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
 use futures::stream;
 use rmq::TimestampedMessage;
+use TimeRange;
 use std::boxed::Box;
 use failure::{Error};
 use std::sync::Arc;
 use url::{Url, ParseError};
 use serde::de::DeserializeOwned;
+use serde::ser::*;
 use hyper::Client;
 use hyper::client::HttpConnector;
 use hyper::StatusCode;
@@ -27,14 +29,22 @@ pub struct Config {
     doc_type: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Deserialize, Debug)]
 pub struct EsDoc<A> {
     pub _source: A
 }
+
+
+#[derive(Deserialize, Debug)]
+pub struct EsResult<A> {
+    pub hits: Vec<EsDoc<A>>
+}
+
 trait EsEndpoints {
   fn message_url(&self, id: Option<String>) -> Result<Url, ParseError>;
   fn index_url(&self) -> Result<Url, ParseError>;
   fn mapping_url(&self) -> Result<Url, ParseError>;
+  fn search_url(&self) -> Result<Url, ParseError>;
 }
 
 impl EsEndpoints for Config {
@@ -48,13 +58,20 @@ impl EsEndpoints for Config {
     }
 
     fn index_url(&self) -> Result<Url, ParseError> {
-        Url::parse(&self.base_url).and_then(|u| u.join(&format!("{}/", &self.index)))
+        Url::parse(&self.base_url)
+            .and_then(|u| u.join(&format!("{}/", &self.index)))
     }
 
     fn mapping_url(&self) -> Result<Url, ParseError> {
         let index_url = self.index_url()?;
         let mapping_url = index_url.join(&format!("_mapping/{}/", &self.doc_type))?;
         Ok(mapping_url)
+    }
+
+    fn search_url(&self) -> Result<Url, ParseError> {
+        let index_url = self.index_url()?;
+        let search_url = index_url.join("_search/")?;
+        Ok(search_url)
     }
 }
 
@@ -68,11 +85,27 @@ impl Default for Config {
     }
 }
 
+pub struct MessageQuery {
+    pub exchange: String,
+    pub routing_key: Option<String>,
+    pub time_range: Option<TimeRange>,
+}
+
+impl Serialize for MessageQuery {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+    {
+        unimplemented!()
+    }
+}
+
 
 //TODO: reimplement using plain Hyper client
 pub trait MessageSearchService {
     fn write(&self, rx: Receiver<TimestampedMessage>) -> Task;
     fn init_store(&self) -> Task;
+    fn search(&self, query: MessageQuery) -> IoFuture<Vec<TimestampedMessage>>;
     fn message_for(&self, id: String) -> IoFuture<Option<TimestampedMessage>>;
 }
 
@@ -113,7 +146,7 @@ fn expect_option<A: DeserializeOwned + Send + 'static>(client: &Client<HttpConne
     })
 }
 
-fn _expect<A: DeserializeOwned + Send + 'static>(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=A, Error=Error> + Send> {
+fn expect<A: DeserializeOwned + Send + 'static>(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=A, Error=Error> + Send> {
     handle_response(client, req, |status_code, s| {
         match status_code {
             _ if status_code.is_success() => serde_json::from_slice(s).map_err(|e| e.into()),
@@ -229,8 +262,29 @@ impl MessageSearchService for MessageStore {
               .body(Body::empty())
               .expect("couldn't build a request!");
 
-        Box::new(expect_option::<EsDoc<TimestampedMessage>>(&client, req).map(|maybe_doc| maybe_doc.map(|doc| doc._source)))
+        Box::new(expect_option::<EsDoc<TimestampedMessage>>(&client, req)
+            .map(|maybe_doc| maybe_doc.map(|doc| doc._source)))
 
+    }
+
+    fn search(&self, query: MessageQuery) -> Box<Future<Item=Vec<TimestampedMessage>, Error=Error> + Send> {
+        let client = Client::new();
+        let index_url = self.config.search_url().unwrap();
+        let body = Body::wrap_stream(stream::once(serde_json::to_string(&query)));
+        let req =
+            Request::builder()
+                .method(Method::POST)
+                .uri(index_url.to_string())
+                .body(body)
+                .expect("couldn't build a request!");
+
+
+        Box::new(expect::<EsResult<TimestampedMessage>>(&client, req).map(|es_res| {
+           es_res.hits
+               .into_iter()
+               .map(|es_doc| es_doc._source )
+               .collect()
+        }))
     }
 }
 
