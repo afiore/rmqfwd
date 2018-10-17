@@ -3,9 +3,9 @@ extern crate futures;
 extern crate rmqfwd;
 extern crate tokio;
 extern crate tokio_codec;
+extern crate failure;
 
 #[macro_use] extern crate log;
-#[macro_use] extern crate failure;
 #[macro_use] extern crate clap;
 
 use clap::{App, Arg, SubCommand};
@@ -13,7 +13,7 @@ use failure::Error;
 use futures::prelude::*;
 use futures::sync::mpsc;
 use rmqfwd::es;
-use rmqfwd::es::{MessageSearchService, MessageStore, MessageQuery};
+use rmqfwd::es::{MessageSearchService, MessageStore, MessageQuery, StoredMessage};
 use rmqfwd::rmq;
 use rmqfwd::rmq::{Config, TimestampedMessage};
 use rmqfwd::fs::*;
@@ -143,9 +143,10 @@ fn main() {
             //TODO: how can I chain this?
             let docs = rt.block_on(msg_store.search(query)).expect("Couldn't run search query");
             let export = stream::iter_ok(docs).and_then(move |msg| {
-              let target_file = target.join(&format!("{}.json", msg.received_at));
-              exporter.export_message(msg, target_file)
-            }).for_each(|_| Ok(()));
+              let target_file = target.join(&format!("{}.json", msg.id));
+              let target_file2 = target_file.clone();
+              exporter.export_message(msg, target_file).map(|_| target_file2)
+            }).for_each(|target_file| Ok(info!("exported {:?}.", target_file)));
 
             let result = rt.block_on(export);
             match result {
@@ -175,7 +176,7 @@ fn main() {
                     }).collect()
                 }); //TODO: sink into rabbit publisher...
 
-            let result: Result<Vec<(String, Option<TimestampedMessage>)>, Error> = rt.block_on(x);
+            let result: Result<Vec<(String, Option<StoredMessage>)>, Error> = rt.block_on(x);
 
             match result {
                 Err(err) => {

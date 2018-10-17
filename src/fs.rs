@@ -1,4 +1,4 @@
-use rmq::TimestampedMessage;
+use es::StoredMessage;
 use std::path::PathBuf;
 use failure::Error;
 use futures::Future;
@@ -8,7 +8,7 @@ use serde_json;
 
 
 pub trait Export {
-   fn export_message(&self, msg: TimestampedMessage, target: PathBuf) -> Box<Future<Item=(), Error=Error> + Send>;
+   fn export_message(&self, msg: StoredMessage, target: PathBuf) -> Box<Future<Item=(), Error=Error> + Send>;
 }
 
 pub struct Exporter {
@@ -24,7 +24,7 @@ impl Exporter {
 }
 
 impl Export for Exporter {
-    fn export_message(&self, msg: TimestampedMessage, target: PathBuf) -> Box<Future<Item=(), Error=Error> + Send> {
+    fn export_message(&self, msg: StoredMessage, target: PathBuf) -> Box<Future<Item=(), Error=Error> + Send> {
         let pretty_print = self.pretty_print.clone();
         Box::new(future::lazy(|| {
             if target.exists() {

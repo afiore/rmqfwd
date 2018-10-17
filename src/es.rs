@@ -1,7 +1,7 @@
 use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
 use futures::stream;
-use rmq::TimestampedMessage;
+use rmq::{Message, TimestampedMessage};
 use TimeRange;
 use std::boxed::Box;
 use failure::{Error};
@@ -9,7 +9,6 @@ use std::sync::Arc;
 use url::{Url, ParseError};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use serde::ser::*;
 use hyper::Client;
 use hyper::client::HttpConnector;
 use hyper::StatusCode;
@@ -18,6 +17,7 @@ use hyper::Method;
 use hyper::Body;
 use hyper::Chunk;
 use serde_json;
+use chrono::prelude::*;
 
 pub type Task = Box<Future<Item = (), Error = Error> + Send>;
 pub type IoFuture<A> = Box<Future<Item = A, Error = Error> + Send>;
@@ -45,6 +45,24 @@ pub struct EsHits<A> {
 #[derive(Deserialize, Debug)]
 pub struct EsResult<A> {
     pub hits: EsHits<A>
+}
+
+impl Into<Vec<StoredMessage>> for EsResult<TimestampedMessage> {
+    fn into(self) -> Vec<StoredMessage> {
+        self.hits.hits
+            .into_iter()
+            .map(|es_doc| {
+                StoredMessage { id: es_doc._id, received_at: es_doc._source.received_at, message: es_doc._source.message }
+            } )
+            .collect()
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct StoredMessage {
+  pub received_at: DateTime<Utc>,
+  pub message: Message,
+  pub id: String
 }
 
 trait EsEndpoints {
@@ -143,8 +161,8 @@ impl Into<Value> for MessageQuery {
 pub trait MessageSearchService {
     fn write(&self, rx: Receiver<TimestampedMessage>) -> Task;
     fn init_store(&self) -> Task;
-    fn search(&self, query: MessageQuery) -> IoFuture<Vec<TimestampedMessage>>;
-    fn message_for(&self, id: String) -> IoFuture<Option<TimestampedMessage>>;
+    fn search(&self, query: MessageQuery) -> IoFuture<Vec<StoredMessage>>;
+    fn message_for(&self, id: String) -> IoFuture<Option<StoredMessage>>;
 }
 
 pub struct MessageStore {
@@ -291,7 +309,7 @@ impl MessageSearchService for MessageStore {
             }).for_each(|_| Ok(())))
     }
 
-    fn message_for(&self, id: String) -> IoFuture<Option<TimestampedMessage>> {
+    fn message_for(&self, id: String) -> IoFuture<Option<StoredMessage>> {
         let client = Client::new();
         let index_url = self.config.message_url(Some(id)).unwrap();
         let req =
@@ -301,12 +319,12 @@ impl MessageSearchService for MessageStore {
               .body(Body::empty())
               .expect("couldn't build a request!");
 
-        Box::new(expect_option::<EsDoc<TimestampedMessage>>(&client, req)
+        Box::new(expect_option::<EsDoc<StoredMessage>>(&client, req)
             .map(|maybe_doc| maybe_doc.map(|doc| doc._source)))
 
     }
 
-    fn search(&self, query: MessageQuery) -> Box<Future<Item=Vec<TimestampedMessage>, Error=Error> + Send> {
+    fn search(&self, query: MessageQuery) -> Box<Future<Item=Vec<StoredMessage>, Error=Error> + Send> {
         let client = Client::new();
         let search_url = self.config.search_url().unwrap();
         let json_query: Value = query.into();
@@ -321,13 +339,7 @@ impl MessageSearchService for MessageStore {
                 .expect("couldn't build a request!");
 
 
-        Box::new(expect::<EsResult<TimestampedMessage>>(&client, req).map(|es_res| {
-           debug!("got results: {:?}", es_res);
-           es_res.hits.hits
-               .into_iter()
-               .map(|es_doc| es_doc._source )
-               .collect()
-        }))
+        Box::new(expect::<EsResult<TimestampedMessage>>(&client, req).map(|es_res| es_res.into()))
     }
 }
 
