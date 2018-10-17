@@ -13,7 +13,7 @@ use failure::Error;
 use futures::prelude::*;
 use futures::sync::mpsc;
 use rmqfwd::es;
-use rmqfwd::es::{MessageSearchService, MessageStore};
+use rmqfwd::es::{MessageSearchService, MessageStore, MessageQuery};
 use rmqfwd::rmq;
 use rmqfwd::rmq::{Config, TimestampedMessage};
 use rmqfwd::fs::*;
@@ -21,18 +21,12 @@ use std::io::BufReader;
 use std::io::Write;
 use tokio::fs::file::File;
 use tokio::io;
+use futures::stream;
+use std::path::PathBuf;
 use tokio::runtime::Runtime;
 
 fn main() {
     env_logger::init();
-
-
-    let arg_exchange =
-        Arg::with_name("exchange")
-            .required(true)
-            .takes_value(true)
-            .short("e")
-            .long_help("name of the exchange in which to publish");
 
     let arg_ids_file =
         Arg::with_name("ids-file")
@@ -41,23 +35,45 @@ fn main() {
             .short("f")
             .long_help("path to a file listing message ids (one per line)");
 
-    let arg_routing_key =
+    let arg_routing_key_query =
         Arg::with_name("routing-key")
             .required(false)
             .takes_value(true)
             .short("k")
-            .long_help("the routing key to use");
+            .long_help("the message routing key");
 
-    let arg_msg_id =
-        Arg::with_name("message-id")
-            .index(1)
+    let arg_routing_key_replay =
+        Arg::with_name("routing-key")
+            .required(false)
+            .takes_value(true)
+            .short("k")
+            .long_help("the message routing key");
+
+
+    let arg_exchange_query =
+        Arg::with_name("exchange")
             .required(true)
             .takes_value(true)
-            .long_help("the id of the message to export");
+            .short("e")
+            .long_help("the exchange where the message is published");
+
+     let arg_exchange_replay =
+        Arg::with_name("exchange")
+            .required(true)
+            .takes_value(true)
+            .short("e")
+            .long_help("the exchange where the message will be published");
+
+    let arg_msg_body =
+        Arg::with_name("message-body")
+            .required(false)
+            .takes_value(true)
+            .short("b")
+            .long_help("a string keyword to be matched against the message body");
 
     let arg_export_target =
         Arg::with_name("target")
-            .index(2)
+            .index(1)
             .required(true)
             .takes_value(true)
             .long_help("the export target file");
@@ -79,14 +95,14 @@ fn main() {
         .subcommand(
             SubCommand
             ::with_name("export")
-                .about("fetch a message from the store and write it to the file system")
-                .args(&[arg_msg_id, arg_export_target, arg_pretty_print])
+                .about("query the message store and write the result to the file system")
+                .args(&[arg_exchange_query, arg_routing_key_query, arg_msg_body, arg_export_target, arg_pretty_print])
         )
         .subcommand(
             SubCommand
             ::with_name("replay")
                 .about("replay a set of message ids")
-                .args(&[arg_exchange, arg_ids_file, arg_routing_key])
+                .args(&[arg_exchange_replay, arg_ids_file, arg_routing_key_replay])
         );
 
     //TODO: check if no argument has been supplied at all, in that case just print long help
@@ -110,17 +126,26 @@ fn main() {
         }
         Some("export") => {
             let matches = matches.subcommand_matches("export").unwrap();
-            let msg_id = matches.value_of("message-id").unwrap();
-            let target = matches.value_of_os("target").unwrap().clone().into();
+            let exchange = matches.value_of("exchange").unwrap().to_string();
+            let routing_key = matches.value_of("routing-key").map(|s| s.to_string());
+            let body = matches.value_of("body").map(|s| s.to_string());
+
+            let target: PathBuf = matches.value_of_os("target").unwrap().clone().into();
             let pretty_print = value_t!(matches, "pretty-print", bool).unwrap_or(false);
 
             let msg_store = MessageStore::new(es::Config::default());
+            let exporter = Exporter::new(pretty_print);
 
             let mut rt = Runtime::new().unwrap();
+            let query = MessageQuery { exchange : exchange, routing_key: routing_key, body: body, time_range: None  };
+            debug!("search query: {:?}", query);
 
-            let export = Box::new(msg_store.message_for(msg_id.to_string()).and_then(|maybe_msg|
-              maybe_msg.ok_or(format_err!("couldn't find a message with the supplied id"))
-            ).and_then(move |msg| Exporter::new(pretty_print).export_message(msg, target)));
+            //TODO: how can I chain this?
+            let docs = rt.block_on(msg_store.search(query)).expect("Couldn't run search query");
+            let export = stream::iter_ok(docs).and_then(move |msg| {
+              let target_file = target.join(&format!("{}.json", msg.received_at));
+              exporter.export_message(msg, target_file)
+            }).for_each(|_| Ok(()));
 
             let result = rt.block_on(export);
             match result {

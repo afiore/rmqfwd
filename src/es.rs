@@ -8,6 +8,7 @@ use failure::{Error};
 use std::sync::Arc;
 use url::{Url, ParseError};
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use serde::ser::*;
 use hyper::Client;
 use hyper::client::HttpConnector;
@@ -31,13 +32,19 @@ pub struct Config {
 
 #[derive(Deserialize, Debug)]
 pub struct EsDoc<A> {
-    pub _source: A
+    pub _source: A,
+    pub _id: String
 }
 
 
 #[derive(Deserialize, Debug)]
-pub struct EsResult<A> {
+pub struct EsHits<A> {
     pub hits: Vec<EsDoc<A>>
+}
+
+#[derive(Deserialize, Debug)]
+pub struct EsResult<A> {
+    pub hits: EsHits<A>
 }
 
 trait EsEndpoints {
@@ -85,18 +92,49 @@ impl Default for Config {
     }
 }
 
+#[derive(Debug)]
 pub struct MessageQuery {
     pub exchange: String,
+    pub body: Option<String>,
     pub routing_key: Option<String>,
     pub time_range: Option<TimeRange>,
 }
 
-impl Serialize for MessageQuery {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
-    {
-        unimplemented!()
+impl Into<Value> for MessageQuery {
+    fn into(self) -> Value {
+
+        let mut nested: Vec<Value> = Vec::new();
+        nested.push(json!({"match": {"message.exchange": self.exchange }}));
+
+        for key in self.routing_key {
+            json!({
+              "match": {"message.routing-key": key }
+            });
+        }
+        for body in self.body {
+            nested.push(json!({
+              "match": {"message.routing-key": body }
+            }));
+        }
+
+        let nested_obj = json!({
+            "nested": {
+                "path": "message",
+                "score_mode": "avg",
+                "query": {
+                    "bool": {
+                        "must": nested
+                    }
+                }
+        }});
+
+        json!({
+            "query": {
+                 "bool": {
+                     "must": [nested_obj]
+                 }
+            }
+        })
     }
 }
 
@@ -196,6 +234,7 @@ impl MessageSearchService for MessageStore {
                     "index": "not_analyzed"
                   },
                   "message": {
+                    "type": "nested",
                     "properties": {
                       "exchange": {
                         "type": "string",
@@ -269,18 +308,22 @@ impl MessageSearchService for MessageStore {
 
     fn search(&self, query: MessageQuery) -> Box<Future<Item=Vec<TimestampedMessage>, Error=Error> + Send> {
         let client = Client::new();
-        let index_url = self.config.search_url().unwrap();
-        let body = Body::wrap_stream(stream::once(serde_json::to_string(&query)));
+        let search_url = self.config.search_url().unwrap();
+        let json_query: Value = query.into();
+        debug!("sending ES query: {:?} to {:?}", json_query.to_string(), search_url);
+
+        let body = Body::wrap_stream(stream::once(serde_json::to_string(&json_query)));
         let req =
             Request::builder()
                 .method(Method::POST)
-                .uri(index_url.to_string())
+                .uri(search_url.to_string())
                 .body(body)
                 .expect("couldn't build a request!");
 
 
         Box::new(expect::<EsResult<TimestampedMessage>>(&client, req).map(|es_res| {
-           es_res.hits
+           debug!("got results: {:?}", es_res);
+           es_res.hits.hits
                .into_iter()
                .map(|es_doc| es_doc._source )
                .collect()

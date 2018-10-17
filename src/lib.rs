@@ -20,6 +20,7 @@ pub mod fs;
 
 use chrono::prelude::*;
 
+#[derive(Debug)]
 pub enum TimeRange {
     StartEnd { start: DateTime<Utc>, end: DateTime<Utc> },
     Since(DateTime<Utc>),
