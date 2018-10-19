@@ -8,7 +8,7 @@ extern crate failure;
 #[macro_use] extern crate log;
 #[macro_use] extern crate clap;
 
-use clap::{App, Arg, SubCommand};
+use clap::{App, SubCommand};
 use failure::Error;
 use futures::prelude::*;
 use futures::sync::mpsc;
@@ -21,69 +21,95 @@ use std::io::BufReader;
 use std::io::Write;
 use tokio::fs::file::File;
 use tokio::io;
-use futures::stream;
 use std::path::PathBuf;
 use tokio::runtime::Runtime;
 
 fn main() {
     env_logger::init();
 
-    let arg_ids_file =
-        Arg::with_name("ids-file")
-            .required(true)
-            .takes_value(true)
-            .short("f")
-            .long_help("path to a file listing message ids (one per line)");
+    pub (crate) mod arg {
+        pub mod replay {
+            use clap::Arg;
 
-    let arg_routing_key_query =
-        Arg::with_name("routing-key")
-            .required(false)
-            .takes_value(true)
-            .short("k")
-            .long_help("the message routing key");
-
-    let arg_routing_key_replay =
-        Arg::with_name("routing-key")
-            .required(false)
-            .takes_value(true)
-            .short("k")
-            .long_help("the message routing key");
+            pub fn ids_file() -> Arg<'static,'static> {
+                Arg::with_name("ids-file")
+                    .required(true)
+                    .takes_value(true)
+                    .short("f")
+                    .long_help("path to a file listing message ids (one per line)")
+            }
 
 
-    let arg_exchange_query =
-        Arg::with_name("exchange")
-            .required(true)
-            .takes_value(true)
-            .short("e")
-            .long_help("the exchange where the message is published");
+            pub fn routing_key() -> Arg<'static, 'static> {
+                Arg::with_name("routing-key")
+                    .required(false)
+                    .takes_value(true)
+                    .short("k")
+                    .long_help("the message routing key")
+            }
 
-     let arg_exchange_replay =
-        Arg::with_name("exchange")
-            .required(true)
-            .takes_value(true)
-            .short("e")
-            .long_help("the exchange where the message will be published");
 
-    let arg_msg_body =
-        Arg::with_name("message-body")
-            .required(false)
-            .takes_value(true)
-            .short("b")
-            .long_help("a string keyword to be matched against the message body");
+            pub fn exchange() -> Arg<'static, 'static> {
+                Arg::with_name("exchange")
+                    .required(true)
+                    .takes_value(true)
+                    .short("e")
+                    .long_help("the exchange where the message will be published")
+            }
+        }
 
-    let arg_export_target =
-        Arg::with_name("target")
-            .index(1)
-            .required(true)
-            .takes_value(true)
-            .long_help("the export target file");
+        pub mod export {
+            use clap::Arg;
+            pub fn exchange() -> Arg<'static, 'static> {
+                Arg::with_name("exchange")
+                    .required(true)
+                    .takes_value(true)
+                    .short("e")
+                    .long_help("the exchange where the message is published")
+            }
 
-    let arg_pretty_print =
-        Arg::with_name("pretty-print")
-            .short("p")
-            .required(false)
-            .takes_value(false)
-            .long_help("pretty print message");
+            pub fn msg_body() -> Arg<'static, 'static> {
+                Arg::with_name("message-body")
+                    .required(false)
+                    .takes_value(true)
+                    .short("b")
+                    .long_help("a string keyword to be matched against the message body")
+            }
+
+            pub fn routing_key() -> Arg<'static, 'static> {
+                Arg::with_name("routing-key")
+                    .required(false)
+                    .takes_value(true)
+                    .short("k")
+                    .long_help("the message routing key")
+            }
+
+            pub fn target() -> Arg<'static, 'static> {
+                Arg::with_name("target")
+                    .index(1)
+                    .required(true)
+                    .takes_value(true)
+                    .long_help("the export target file")
+            }
+
+            pub fn pretty_print() -> Arg<'static, 'static> {
+                Arg::with_name("pretty-print")
+                    .short("p")
+                    .required(false)
+                    .takes_value(false)
+                    .long_help("pretty print message")
+            }
+
+            pub fn force() -> Arg<'static, 'static> {
+                Arg::with_name("force")
+                    .short("f")
+                    .required(false)
+                    .takes_value(false)
+                    .long_help("force file writes, even when files exist in the target directory")
+            }
+        }
+    }
+
 
     let app = App::new(crate_name!())
         .version(crate_version!())
@@ -96,13 +122,14 @@ fn main() {
             SubCommand
             ::with_name("export")
                 .about("query the message store and write the result to the file system")
-                .args(&[arg_exchange_query, arg_routing_key_query, arg_msg_body, arg_export_target, arg_pretty_print])
+                .args(&[arg::export::exchange(), arg::export::routing_key(), arg::export::msg_body(),
+                        arg::export::target(), arg::export::pretty_print(), arg::export::force()])
         )
         .subcommand(
             SubCommand
             ::with_name("replay")
                 .about("replay a set of message ids")
-                .args(&[arg_exchange_replay, arg_ids_file, arg_routing_key_replay])
+                .args(&[arg::replay::exchange(), arg::replay::ids_file(), arg::replay::routing_key()])
         );
 
     //TODO: check if no argument has been supplied at all, in that case just print long help
@@ -131,26 +158,27 @@ fn main() {
             let body = matches.value_of("body").map(|s| s.to_string());
 
             let target: PathBuf = matches.value_of_os("target").unwrap().clone().into();
-            let pretty_print = value_t!(matches, "pretty-print", bool).unwrap_or(false);
+            debug!("matches: {:?}",matches);
+            let pretty_print = matches.occurrences_of("pretty-print") > 0;
+            let force = matches.occurrences_of("force") > 0;
 
             let msg_store = MessageStore::new(es::Config::default());
-            let exporter = Exporter::new(pretty_print);
+            let exporter = Exporter::new(pretty_print, force);
 
             let mut rt = Runtime::new().unwrap();
-            let query = MessageQuery { exchange : exchange, routing_key: routing_key, body: body, time_range: None  };
+            let query = MessageQuery {
+                exchange : exchange,
+                routing_key: routing_key,
+                body: body,
+                time_range: None
+            };
             debug!("search query: {:?}", query);
 
-            //TODO: how can I chain this?
-            let docs = rt.block_on(msg_store.search(query)).expect("Couldn't run search query");
-            let export = stream::iter_ok(docs).and_then(move |msg| {
-              let target_file = target.join(&format!("{}.json", msg.id));
-              let target_file2 = target_file.clone();
-              exporter.export_message(msg, target_file).map(|_| target_file2)
-            }).for_each(|target_file| Ok(info!("exported {:?}.", target_file)));
-
-            let result = rt.block_on(export);
+            let result = rt.block_on(msg_store.search(query).and_then(move |docs| {
+                exporter.export_messages(docs, target)
+            }));
             match result {
-                Ok(_) => (),
+                Ok(_) => info!("export completed."),
                 Err(e) => {
                     error!("Failed to export: {}", e);
                     std::process::exit(1);
