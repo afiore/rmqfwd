@@ -32,7 +32,7 @@ impl TimestampedMessage {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Message {
     pub routing_key: Option<String>,
     pub exchange: String,
@@ -44,7 +44,7 @@ pub struct Message {
     pub routed_queues: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Properties {
     //TODO: add _type?
     pub content_type: Option<String>,
@@ -59,6 +59,25 @@ pub struct Properties {
     pub user_id: Option<String>,
     pub app_id: Option<String>,
     pub cluster_id: Option<String>,
+}
+
+impl Default for Properties {
+    fn default() -> Self {
+        Properties {
+            content_type: None,
+            content_encoding: None,
+            delivery_mode: None,
+            priority: None,
+            correlation_id: None,
+            reply_to: None,
+            expiration: None,
+            message_id: None,
+            timestamp: None,
+            user_id: None,
+            app_id: None,
+            cluster_id: None
+        }
+    }
 }
 
 

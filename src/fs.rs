@@ -6,7 +6,6 @@ use tokio::fs::file::File;
 use std::fs::{remove_dir_all, read_dir, create_dir};
 use serde_json;
 
-
 pub trait Export {
    fn export_messages(&self, messages: Vec<StoredMessage>, target: PathBuf) -> Box<Future<Item=(), Error=Error> + Send>;
 }
@@ -29,8 +28,6 @@ impl Exporter {
 impl Export for Exporter {
     fn export_messages(&self, messages: Vec<StoredMessage>, target: PathBuf) -> Box<Future<Item=(), Error=Error> + Send> {
         let pretty_print = self.pretty_print;
-        let target1 = target.clone();
-        let target2 = target.clone();
         let force1 = self.force.clone();
         let force2 = self.force.clone();
 
@@ -38,47 +35,158 @@ impl Export for Exporter {
 
         let setup_target = future::lazy(move || {
             if !target.exists() {
-                info!("creating directory {}", target1.display());
-                create_dir(target1).map_err(|e| e.into())
+                info!("creating directory {}", target.display());
+                create_dir(target.clone()).map_err(|e| e.into()).map(|_| target)
             } else {
-                read_dir(target).map_err(|e| e.into()).and_then(|mut entries| {
+                read_dir(target.clone()).map_err(|e| e.into()).and_then(|mut entries| {
                     if let Some(_) = entries.next() {
                         if force1 {
-                            warn!("removed target directory {:?}", target1.display());
-                            remove_dir_all(target1).map_err(|e| e.into())
+                            warn!("removing and re-creating target dir: {:?}", target.clone());
+                            remove_dir_all(target.clone())
+                                .and_then(|_| create_dir(target.clone()))
+                                .map_err(|e| e.into())
+                                .map(|_| target)
                         } else {
-                            Err(format_err!("target directory {:?} already exists!", target1.display()))
+                            Err(format_err!("target directory {:?} already exists!", target.display()))
                         }
-                    } else { Ok(()) }
+                    } else { Ok(target) }
                 })
             }
 
         });
 
-        //TODO: can I just reuse `export_message`? compiler says no.. "cannot infer an appropriate lifetime due to conflicting requirements"
-        let run_export = future::join_all(messages.into_iter().map(move |msg| {
-            let target = target2.join(&format!("{}.json", msg.id));
+        let run_export = move |target: PathBuf| {
+            Box::new(future::join_all(messages.into_iter().map(move |msg| {
+                let target = target.join(&format!("{}.json", msg.id));
 
-            future::lazy(move || {
-                if target.exists() && !force2 {
-                    Err(format_err!("file {:?} already exists!", target.display()))
-                } else {
-                    Ok(target)
-                }
-            }).and_then(|target| {
-                info!("exporting {:?}", target.display());
-                File::create(target).from_err()
-            }).and_then(move |file| {
-                let result = if pretty_print {
-                    serde_json::to_writer_pretty(file, &msg)
-                } else {
-                    serde_json::to_writer(file, &msg)
-                };
+                future::lazy(move || {
+                    if target.exists() && !force2 {
+                        Err(format_err!("file {:?} already exists!", target.display()))
+                    } else {
+                        Ok(target)
+                    }
+                }).and_then(|target| {
+                    info!("exporting {:?}", target.display());
+                    File::create(target).from_err()
 
-                result.map_err(|e| e.into())
-            })
-        })).map(|_| ());
+                }).and_then(move |file| {
+                    let result = if pretty_print {
+                        serde_json::to_writer_pretty(file, &msg)
+                    } else {
+                        serde_json::to_writer(file, &msg)
+                    };
 
-        Box::new(setup_target.and_then(|_| run_export))
+                    result.map_err(|e| e.into())
+                })
+            })).map(|_| ()))
+        };
+
+        Box::new(setup_target.and_then(|target| run_export(target.into())))
     }
 }
+
+#[cfg(test)]
+mod test {
+    extern crate tempdir;
+    use es::StoredMessage;
+    use rmq::{Message, Properties};
+    use lapin::types::AMQPValue;
+    use chrono::prelude::*;
+    use fs::*;
+    use tokio::runtime::Runtime;
+    use serde_json;
+    use std::fs::File;
+    use std::path::PathBuf;
+    use failure::Error;
+    use self::tempdir::TempDir;
+
+    fn test_docs() -> Vec<StoredMessage> {
+         let doc1 = StoredMessage {
+            id: "A".to_string(), received_at: Utc::now(), message: Message {
+                routing_key: None,
+                exchange: "exchange-a".to_string(),
+                redelivered: false,
+                body: "message A".to_string(),
+                headers: AMQPValue::Void,
+                properties: Properties::default(),
+                node: None,
+                routed_queues: Vec::new()
+            }
+        };
+        let doc2 = StoredMessage {
+            id: "B".to_string(), received_at: Utc::now(), message: Message {
+                routing_key: None,
+                exchange: "exchange-a".to_string(),
+                redelivered: false,
+                body: "message B".to_string(),
+                headers: AMQPValue::Void,
+                properties: Properties::default(),
+                node: None,
+                routed_queues: Vec::new()
+            }
+        };
+        vec![doc1, doc2]
+    }
+
+    fn assert_export_succeeds(result: Result<(), Error>, docs: Vec<StoredMessage>, target: PathBuf) {
+        assert!(result.is_ok());
+        for doc in docs {
+            let file_path = target.join(format!("{}.json", doc.id.clone()));
+            let msg_file = File::open(file_path.clone()).expect(&format!("Cannot open file: {:?}", file_path.display()));
+            let parsed_doc: StoredMessage = serde_json::from_reader(msg_file).expect(&format!("Cannot parse file: {:?}", file_path.display()));
+            assert_eq!(parsed_doc, doc);
+        }
+    }
+
+    #[test]
+    fn test_exports_messages_when_target_does_not_exist() {
+        let target = TempDir::new("export-dir").expect("cannot create tmpdir!").into_path();
+
+        let docs = test_docs();
+
+        let mut rt = Runtime::new().unwrap();
+        let exporter = Exporter::new(false, false);
+
+        assert_export_succeeds(
+            rt.block_on(exporter.export_messages(docs.to_vec(), target.clone())),
+            docs,
+            target
+        );
+    }
+
+
+    #[test]
+    fn test_fails_export_when_target_exists() {
+        let target = TempDir::new("export-dir").expect("cannot create tmpdir!").into_path();
+        File::create(target.join("some-file.txt")).expect("Cannot write file!");
+
+        let docs = test_docs();
+
+        let mut rt = Runtime::new().unwrap();
+        let exporter = Exporter::new(false, false);
+
+        let error = rt.block_on(exporter.export_messages(docs.to_vec(), target.clone())).unwrap_err();
+        let error_msg = format!("{}", error);
+        assert!(error_msg.contains("already exists"));
+    }
+
+    #[test]
+    fn test_force_exports_messages_when_target_exist() {
+        let target = TempDir::new("other-export-dir").expect("cannot create tmpdir!").into_path();
+        File::create(target.join("some-file.txt")).expect("Cannot write file!");
+
+        let docs = test_docs();
+        let force = true;
+
+        let mut rt = Runtime::new().unwrap();
+        let exporter = Exporter::new(false, force);
+
+        assert_export_succeeds(
+            rt.block_on(exporter.export_messages(docs.to_vec(), target.clone())),
+            docs,
+            target
+        );
+    }
+
+}
+

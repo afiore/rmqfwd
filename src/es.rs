@@ -58,7 +58,7 @@ impl Into<Vec<StoredMessage>> for EsResult<TimestampedMessage> {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct StoredMessage {
   pub received_at: DateTime<Utc>,
   pub message: Message,
