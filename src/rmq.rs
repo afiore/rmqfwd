@@ -1,16 +1,20 @@
 use chrono::prelude::*;
+use es::StoredMessage;
+use failure::Error;
 use futures::future::Future;
 use futures::sync::mpsc::Sender;
-use futures::{Sink, Stream};
+use futures::{future, IntoFuture, Sink, Stream};
+use lapin::channel::Channel;
 use lapin::channel::{
-    BasicConsumeOptions, ConfirmSelectOptions, QueueBindOptions, QueueDeclareOptions,
+    BasicConsumeOptions, BasicProperties, BasicPublishOptions, ConfirmSelectOptions,
+    QueueBindOptions, QueueDeclareOptions,
 };
 use lapin::client;
 use lapin::client::ConnectionOptions;
 use lapin::message::Delivery;
 use lapin::types::*;
 use serde_json;
-use std::collections::{BTreeMap};
+use std::collections::BTreeMap;
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::str;
@@ -19,16 +23,16 @@ use tokio::net::TcpStream;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TimestampedMessage {
-  pub received_at: DateTime<Utc>,
-  pub message: Message
+    pub received_at: DateTime<Utc>,
+    pub message: Message,
 }
 
 impl TimestampedMessage {
     pub fn now(msg: Message) -> TimestampedMessage {
-       TimestampedMessage {
-         message: msg,
-         received_at: Utc::now(),
-       }
+        TimestampedMessage {
+            message: msg,
+            received_at: Utc::now(),
+        }
     }
 }
 
@@ -42,6 +46,52 @@ pub struct Message {
     pub properties: Properties,
     pub node: Option<String>,
     pub routed_queues: Vec<String>,
+}
+
+impl Message {
+    pub fn basic_properties(&self) -> BasicProperties {
+        let properties = self.properties.clone();
+        let mut props = BasicProperties::default();
+        let headers = amqp_field_table(&self.headers);
+
+        if !headers.is_empty() {
+            props = props.with_headers(headers);
+        }
+        for content_type in properties.content_type {
+            props = props.with_content_type(content_type);
+        }
+        for content_encoding in properties.content_encoding {
+            props = props.with_content_encoding(content_encoding);
+        }
+        for delivery_mode in properties.delivery_mode {
+            props = props.with_delivery_mode(delivery_mode);
+        }
+        for correlation_id in properties.correlation_id {
+            props = props.with_correlation_id(correlation_id);
+        }
+        for reply_to in properties.reply_to {
+            props = props.with_reply_to(reply_to);
+        }
+        for expiration in properties.expiration {
+            props = props.with_expiration(expiration);
+        }
+        for message_id in properties.message_id {
+            props = props.with_message_id(message_id);
+        }
+        for timestamp in properties.timestamp {
+            props = props.with_timestamp(timestamp);
+        }
+        for user_id in properties.user_id {
+            props = props.with_user_id(user_id);
+        }
+        for app_id in properties.app_id {
+            props = props.with_app_id(app_id);
+        }
+        for cluster_id in properties.cluster_id {
+            props = props.with_cluster_id(cluster_id);
+        }
+        props
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -75,12 +125,10 @@ impl Default for Properties {
             timestamp: None,
             user_id: None,
             app_id: None,
-            cluster_id: None
+            cluster_id: None,
         }
     }
 }
-
-
 
 fn amqp_str(ref v: &AMQPValue) -> Option<String> {
     match v {
@@ -90,14 +138,14 @@ fn amqp_str(ref v: &AMQPValue) -> Option<String> {
 }
 
 fn amqp_u8(v: &AMQPValue) -> Option<u8> {
-     match v {
+    match v {
         AMQPValue::ShortShortUInt(s) => Some(*s),
         _ => None,
     }
 }
 
 fn amqp_u64(v: &AMQPValue) -> Option<u64> {
-     match v {
+    match v {
         AMQPValue::Timestamp(s) => Some(*s),
         _ => None,
     }
@@ -110,7 +158,7 @@ fn amqp_str_array(ref v: AMQPValue) -> Vec<String> {
     }
 }
 
-fn amqp_field_table(ref v: AMQPValue) -> FieldTable {
+fn amqp_field_table(v: &AMQPValue) -> FieldTable {
     match v {
         AMQPValue::FieldTable(t) => t.clone(),
         _ => BTreeMap::new(),
@@ -130,8 +178,16 @@ impl From<Delivery> for Message {
             .map(amqp_str_array)
             .unwrap_or_else(Vec::new);
 
-        let mut props = headers.remove("properties").map(amqp_field_table).unwrap_or_else(BTreeMap::new);
-        let prop_headers = props.remove("headers").map(amqp_field_table).unwrap_or_else(BTreeMap::new);
+        info!("message headers: {:#?}", headers);
+
+        let mut props = headers
+            .remove("properties")
+            .map(|p| amqp_field_table(&p))
+            .unwrap_or_else(BTreeMap::new);
+        let prop_headers = props
+            .remove("headers")
+            .map(|p| amqp_field_table(&p))
+            .unwrap_or_else(BTreeMap::new);
         let properties = Properties {
             content_type: props.get("content_type").and_then(amqp_str),
             content_encoding: props.get("content_encoding").and_then(amqp_str),
@@ -190,76 +246,118 @@ impl Default for Config {
     }
 }
 
+fn setup_channel(
+    config: Config,
+) -> Box<Future<Item = Channel<TcpStream>, Error = io::Error> + Send> {
+    Box::new(
+        TcpStream::connect(&config.address())
+            .and_then(|stream| {
+                client::Client::connect(
+                    stream,
+                    ConnectionOptions {
+                        frame_max: 65535,
+                        heartbeat: 20,
+                        ..Default::default()
+                    },
+                )
+            }).and_then(|(client, heartbeat)| {
+                tokio::spawn(heartbeat.map_err(|e| eprintln!("heartbeat error: {:?}", e)))
+                    .into_future()
+                    .map(|_| client)
+                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "spawn error"))
+            }).and_then(|client| client.create_confirm_channel(ConfirmSelectOptions::default())),
+    )
+}
+
+pub fn publish<I>(
+    config: Config,
+    exchange: String,
+    routing_key: Option<String>,
+    stored_msgs: I,
+) -> Box<Future<Item = (), Error = Error> + Send>
+where
+    I: IntoIterator<Item = StoredMessage> + Send + 'static,
+{
+    Box::new(
+        setup_channel(config)
+            .and_then(move |channel| {
+                let routing_key = routing_key.unwrap_or("#".to_string());
+
+                future::join_all(stored_msgs.into_iter().map(move |stored| {
+                    debug!(
+                        "replaying message: {:#?} to exchange: {:?} with routing key: {:?}",
+                        stored, exchange, routing_key
+                    );
+                    let basic_properties = stored.message.basic_properties();
+                    let msg_body = stored.message.body.into_bytes();
+                    channel
+                        .basic_publish(
+                            &exchange,
+                            &routing_key,
+                            msg_body,
+                            BasicPublishOptions::default(),
+                            basic_properties,
+                        ).map(|confirmation| {
+                            println!("got confirmation of publication: {:?}", confirmation);
+                        })
+                })).map(|_| ())
+            }).map_err(|e| e.into()),
+    )
+}
+
 pub fn bind_and_consume(
     config: Config,
     tx: Sender<TimestampedMessage>,
 ) -> Box<Future<Item = (), Error = io::Error> + Send> {
+    let mut tx = tx.clone().wait();
     let queue_name = config.queue_name.clone();
     let exchange = config.exchange.clone();
-    let addr = config.address();
-    //TODO: can we reuse a runtime?
-    let mut tx = tx.clone().wait();
 
-    Box::new(TcpStream::connect(&addr)
-        .and_then(|stream| {
-            // connect() returns a future of an AMQP Client
-            // that resolves once the handshake is done
-            client::Client::connect(stream, ConnectionOptions::default())
-        })
-        .and_then(|(client, hearthbeat)| {
-            //TODO: spawn using the same runtime.
-            tokio::spawn(hearthbeat.map_err(|e| error!("The heartbeat task errored: {}", e)));
-            client.create_confirm_channel(ConfirmSelectOptions::default())
-        })
-        .and_then(move |channel| {
-            let id = channel.id;
-            info!("created channel with id: {}", id);
+    Box::new(setup_channel(config).and_then(move |channel| {
+        let id = channel.id;
+        info!("created channel with id: {}", id);
 
-            // we using a "move" closure to reuse the channel
-            // once the queue is declared. We could also clone
-            // the channel
-            channel
-                .queue_declare(
-                    &queue_name,
-                    QueueDeclareOptions::default(),
-                    FieldTable::default(),
-                )
-                .and_then(move |queue| {
-                    info!("channel {} declared queue {}", id, &queue_name);
-                    channel
-                        .queue_bind(
-                            &queue_name,
-                            &exchange,
-                            "#",
-                            QueueBindOptions::default(),
-                            FieldTable::default(),
-                        )
-                        .map(move |_| (channel, queue))
-                        .and_then(move |(channel, queue)| {
-                            info!("creating consumer");
-                            channel
-                                .basic_consume(
-                                    &queue,
-                                    "",
-                                    BasicConsumeOptions::default(),
-                                    FieldTable::new(),
-                                )
-                                .map(move |stream| (channel, stream))
+        // we using a "move" closure to reuse the channel
+        // once the queue is declared. We could also clone
+        // the channel
+        channel
+            .queue_declare(
+                &queue_name,
+                QueueDeclareOptions::default(),
+                FieldTable::default(),
+            ).and_then(move |queue| {
+                info!("channel {} declared queue {}", id, &queue_name);
+                channel
+                    .queue_bind(
+                        &queue_name,
+                        &exchange,
+                        "#",
+                        QueueBindOptions::default(),
+                        FieldTable::default(),
+                    ).map(move |_| (channel, queue))
+                    .and_then(move |(channel, queue)| {
+                        info!("creating consumer");
+                        channel
+                            .basic_consume(
+                                &queue,
+                                "",
+                                BasicConsumeOptions::default(),
+                                FieldTable::new(),
+                            ).map(move |stream| (channel, stream))
+                    }).and_then(move |(channel, stream)| {
+                        stream.for_each(move |delivery| {
+                            let tag = delivery.delivery_tag.clone();
+                            debug!("got message: {:?}", delivery);
+                            let msg = Message::from(delivery);
+                            let msg_json = serde_json::to_string(&msg).unwrap();
+                            tx.send(TimestampedMessage::now(msg)).expect(&format!(
+                                "failed to send message through channel: {}",
+                                msg_json
+                            ));
+                            info!("got message: {}", msg_json);
+                            channel.basic_ack(tag, false)
                         })
-                        .and_then(move |(channel, stream)| {
-                            stream.for_each(move |delivery| {
-                                let tag = delivery.delivery_tag.clone();
-                                debug!("got message: {:?}", delivery);
-                                let msg = Message::from(delivery);
-                                let msg_json = serde_json::to_string(&msg).unwrap();
-                                tx.send(TimestampedMessage::now(msg)).expect(&format!(
-                                    "failed to send message through channel: {}",
-                                    msg_json
-                                ));
-                                info!("got message: {}", msg_json);
-                                channel.basic_ack(tag, false)
-                            })
-                        })
-                })
-        }))
+                    })
+            })
+    }))
 }

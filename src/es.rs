@@ -1,23 +1,23 @@
+use chrono::prelude::*;
+use failure::Error;
+use futures::stream;
 use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
-use futures::stream;
-use rmq::{Message, TimestampedMessage};
-use TimeRange;
-use std::boxed::Box;
-use failure::{Error};
-use std::sync::Arc;
-use url::{Url, ParseError};
-use serde::de::DeserializeOwned;
-use serde_json::Value;
-use hyper::Client;
 use hyper::client::HttpConnector;
-use hyper::StatusCode;
-use hyper::Request;
-use hyper::Method;
 use hyper::Body;
 use hyper::Chunk;
+use hyper::Client;
+use hyper::Method;
+use hyper::Request;
+use hyper::StatusCode;
+use rmq::{Message, TimestampedMessage};
+use serde::de::DeserializeOwned;
 use serde_json;
-use chrono::prelude::*;
+use serde_json::Value;
+use std::boxed::Box;
+use std::sync::Arc;
+use url::{ParseError, Url};
+use TimeRange;
 
 pub type Task = Box<Future<Item = (), Error = Error> + Send>;
 pub type IoFuture<A> = Box<Future<Item = A, Error = Error> + Send>;
@@ -33,58 +33,60 @@ pub struct Config {
 #[derive(Deserialize, Debug)]
 pub struct EsDoc<A> {
     pub _source: A,
-    pub _id: String
+    pub _id: String,
 }
-
 
 #[derive(Deserialize, Debug)]
 pub struct EsHits<A> {
-    pub hits: Vec<EsDoc<A>>
+    pub hits: Vec<EsDoc<A>>,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct EsResult<A> {
-    pub hits: EsHits<A>
+    pub hits: EsHits<A>,
 }
 
 impl Into<Vec<StoredMessage>> for EsResult<TimestampedMessage> {
     fn into(self) -> Vec<StoredMessage> {
-        self.hits.hits
+        self.hits
+            .hits
             .into_iter()
-            .map(|es_doc| {
-                StoredMessage { id: es_doc._id, received_at: es_doc._source.received_at, message: es_doc._source.message }
-            } )
-            .collect()
+            .map(|es_doc| StoredMessage {
+                id: es_doc._id,
+                received_at: es_doc._source.received_at,
+                message: es_doc._source.message,
+            }).collect()
     }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct StoredMessage {
-  pub received_at: DateTime<Utc>,
-  pub message: Message,
-  pub id: String
+    pub received_at: DateTime<Utc>,
+    pub message: Message,
+    pub id: String,
 }
 
 trait EsEndpoints {
-  fn message_url(&self, id: Option<String>) -> Result<Url, ParseError>;
-  fn index_url(&self) -> Result<Url, ParseError>;
-  fn mapping_url(&self) -> Result<Url, ParseError>;
-  fn search_url(&self) -> Result<Url, ParseError>;
+    fn message_url(&self, id: Option<String>) -> Result<Url, ParseError>;
+    fn index_url(&self) -> Result<Url, ParseError>;
+    fn mapping_url(&self) -> Result<Url, ParseError>;
+    fn search_url(&self) -> Result<Url, ParseError>;
 }
 
 impl EsEndpoints for Config {
     fn message_url(&self, id: Option<String>) -> Result<Url, ParseError> {
-       let without_id = self.index_url().and_then(|u| u.join(&format!("{}/", self.doc_type)))?;
+        let without_id = self
+            .index_url()
+            .and_then(|u| u.join(&format!("{}/", self.doc_type)))?;
 
-       match id {
-          Some(id) => without_id.join(&format!("{}/", id)),
-           _ => Ok(without_id),
-       }
+        match id {
+            Some(id) => without_id.join(&format!("{}/", id)),
+            _ => Ok(without_id),
+        }
     }
 
     fn index_url(&self) -> Result<Url, ParseError> {
-        Url::parse(&self.base_url)
-            .and_then(|u| u.join(&format!("{}/", &self.index)))
+        Url::parse(&self.base_url).and_then(|u| u.join(&format!("{}/", &self.index)))
     }
 
     fn mapping_url(&self) -> Result<Url, ParseError> {
@@ -120,18 +122,20 @@ pub struct MessageQuery {
 
 impl Into<Value> for MessageQuery {
     fn into(self) -> Value {
-
         let mut nested: Vec<Value> = Vec::new();
-        nested.push(json!({"match": {"message.exchange": self.exchange }}));
+
+        nested.push(json!(
+            {"match": {"message.exchange": self.exchange }}
+        ));
 
         for key in self.routing_key {
-            json!({
+            nested.push(json!({
               "match": {"message.routing-key": key }
-            });
+            }));
         }
         for body in self.body {
             nested.push(json!({
-              "match": {"message.routing-key": body }
+              "match": {"message.body": body }
             }));
         }
 
@@ -156,7 +160,6 @@ impl Into<Value> for MessageQuery {
     }
 }
 
-
 //TODO: reimplement using plain Hyper client
 pub trait MessageSearchService {
     fn write(&self, rx: Receiver<TimestampedMessage>) -> Task;
@@ -177,56 +180,72 @@ impl MessageStore {
     }
 }
 
-
-fn http_err<A: DeserializeOwned + Send + 'static>(status: &StatusCode, body: &Chunk) -> Result<A, Error> {
+fn http_err<A: DeserializeOwned + Send + 'static>(
+    status: &StatusCode,
+    body: &Chunk,
+) -> Result<A, Error> {
     let body = String::from_utf8_lossy(&body.to_vec()).to_string();
-    Err(format_err!("Elasticsearch responded with non successful status code: {:?}. Message: {}", status, body))
+    Err(format_err!(
+        "Elasticsearch responded with non successful status code: {:?}. Message: {}",
+        status,
+        body
+    ))
 }
 
-fn expect_ok(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=(), Error=Error> + Send> {
-    handle_response(client, req, |status_code, s| {
-        match status_code {
-            _ if status_code.is_success() => Ok(()),
-            _ => http_err(&status_code, &s),
-        }
+fn expect_ok(
+    client: &Client<HttpConnector, Body>,
+    req: Request<Body>,
+) -> Box<Future<Item = (), Error = Error> + Send> {
+    handle_response(client, req, |status_code, s| match status_code {
+        _ if status_code.is_success() => Ok(()),
+        _ => http_err(&status_code, &s),
     })
 }
 
-fn expect_option<A: DeserializeOwned + Send + 'static>(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=Option<A>, Error=Error> + Send> {
-    handle_response(client, req, |status_code, s| {
-        match status_code {
-            _ if status_code.is_success() => serde_json::from_slice(s).map(|a| Some(a)).map_err(|e| e.into()),
-            _ if status_code.as_u16() == 404 => Ok(None),
-            _ => http_err(&status_code, &s),
-        }
+fn expect_option<A: DeserializeOwned + Send + 'static>(
+    client: &Client<HttpConnector, Body>,
+    req: Request<Body>,
+) -> Box<Future<Item = Option<A>, Error = Error> + Send> {
+    handle_response(client, req, |status_code, s| match status_code {
+        _ if status_code.is_success() => serde_json::from_slice(s)
+            .map(|a| Some(a))
+            .map_err(|e| e.into()),
+        _ if status_code.as_u16() == 404 => Ok(None),
+        _ => http_err(&status_code, &s),
     })
 }
 
-fn expect<A: DeserializeOwned + Send + 'static>(client: &Client<HttpConnector, Body>, req: Request<Body>) -> Box<Future<Item=A, Error=Error> + Send> {
-    handle_response(client, req, |status_code, s| {
-        match status_code {
-            _ if status_code.is_success() => serde_json::from_slice(s).map_err(|e| e.into()),
-            _ => http_err(&status_code, &s),
-        }
+fn expect<A: DeserializeOwned + Send + 'static>(
+    client: &Client<HttpConnector, Body>,
+    req: Request<Body>,
+) -> Box<Future<Item = A, Error = Error> + Send> {
+    handle_response(client, req, |status_code, s| match status_code {
+        _ if status_code.is_success() => serde_json::from_slice(s).map_err(|e| e.into()),
+        _ => http_err(&status_code, &s),
     })
 }
 
-fn handle_response<A, F>(client: &Client<HttpConnector, Body>, req: Request<Body>, handle_body: F) -> Box<Future<Item=A, Error=Error> + Send>
-  where
+fn handle_response<A, F>(
+    client: &Client<HttpConnector, Body>,
+    req: Request<Body>,
+    handle_body: F,
+) -> Box<Future<Item = A, Error = Error> + Send>
+where
     A: DeserializeOwned + Send + 'static,
-    F: Fn(&StatusCode, &Chunk) -> Result<A, Error> + Send + Sync + 'static {
-    Box::new(client
-        .request(req)
-        .and_then(|res| {
-            let status = res.status();
-            res.into_body().concat2().map(move |chunks| (status, chunks))
-        })
-        .map_err(|e| e.into())
-        .and_then(move |(status, body)| {
-            handle_body(&status, &body)
-        }))
+    F: Fn(&StatusCode, &Chunk) -> Result<A, Error> + Send + Sync + 'static,
+{
+    Box::new(
+        client
+            .request(req)
+            .and_then(|res| {
+                let status = res.status();
+                res.into_body()
+                    .concat2()
+                    .map(move |chunks| (status, chunks))
+            }).map_err(|e| e.into())
+            .and_then(move |(status, body)| handle_body(&status, &body)),
+    )
 }
-
 
 impl MessageSearchService for MessageStore {
     // NOTE: what happens when the mappings change?
@@ -237,14 +256,13 @@ impl MessageSearchService for MessageStore {
         let index_url = self.config.index_url().unwrap();
         let mappings_url = self.config.mapping_url().unwrap();
 
-        let req =
-            Request::builder()
-              .method(Method::POST)
-              .uri(index_url.to_string())
-              .body(Body::empty())
-              .expect("couldn't build a request!");
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(index_url.to_string())
+            .body(Body::empty())
+            .expect("couldn't build a request!");
 
-        Box::new(expect_ok(&client, req).and_then(move |_|{
+        Box::new(expect_ok(&client, req).and_then(move |_| {
             let mappings: serde_json::Value = json!({
                 "properties": {
                   "received_at": {
@@ -279,12 +297,12 @@ impl MessageSearchService for MessageStore {
                 }
               });
 
-            let req =
-                Request::builder()
-                    .method(Method::PUT)
-                    .uri(mappings_url.to_string())
-                    .body(Body::wrap_stream(stream::once(serde_json::to_string(&mappings))))
-                    .expect("couldn't build a request!");
+            let req = Request::builder()
+                .method(Method::PUT)
+                .uri(mappings_url.to_string())
+                .body(Body::wrap_stream(stream::once(serde_json::to_string(
+                    &mappings,
+                )))).expect("couldn't build a request!");
 
             info!("sending request: {:?}", req);
 
@@ -292,55 +310,62 @@ impl MessageSearchService for MessageStore {
         }))
     }
 
-
     fn write(&self, rx: Receiver<TimestampedMessage>) -> Task {
         //TODO: handle error
         let ep_url = self.config.message_url(None).unwrap().to_string();
 
         Box::new(
-            rx.map_err(|_| format_err!("failed to receive message")).and_then(move |msg| {
-                let client = Client::new();
-                let body = Body::wrap_stream(stream::once(serde_json::to_string(&msg)));
-                let mut req = Request::builder();
+            rx.map_err(|_| format_err!("failed to receive message"))
+                .and_then(move |msg| {
+                    let client = Client::new();
+                    let body = Body::wrap_stream(stream::once(serde_json::to_string(&msg)));
+                    let mut req = Request::builder();
 
-                req.method(Method::POST).uri(ep_url.clone());
-                expect_ok(&client, req.body(body).expect(&format!("couldn't build HTTP request {:?}", msg)))
-
-            }).for_each(|_| Ok(())))
+                    req.method(Method::POST).uri(ep_url.clone());
+                    expect_ok(
+                        &client,
+                        req.body(body)
+                            .expect(&format!("couldn't build HTTP request {:?}", msg)),
+                    )
+                }).for_each(|_| Ok(())),
+        )
     }
 
     fn message_for(&self, id: String) -> IoFuture<Option<StoredMessage>> {
         let client = Client::new();
         let index_url = self.config.message_url(Some(id)).unwrap();
-        let req =
-            Request::builder()
-              .method(Method::GET)
-              .uri(index_url.to_string())
-              .body(Body::empty())
-              .expect("couldn't build a request!");
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(index_url.to_string())
+            .body(Body::empty())
+            .expect("couldn't build a request!");
 
-        Box::new(expect_option::<EsDoc<StoredMessage>>(&client, req)
-            .map(|maybe_doc| maybe_doc.map(|doc| doc._source)))
-
+        Box::new(
+            expect_option::<EsDoc<StoredMessage>>(&client, req)
+                .map(|maybe_doc| maybe_doc.map(|doc| doc._source)),
+        )
     }
 
-    fn search(&self, query: MessageQuery) -> Box<Future<Item=Vec<StoredMessage>, Error=Error> + Send> {
+    fn search(
+        &self,
+        query: MessageQuery,
+    ) -> Box<Future<Item = Vec<StoredMessage>, Error = Error> + Send> {
         let client = Client::new();
         let search_url = self.config.search_url().unwrap();
         let json_query: Value = query.into();
-        debug!("sending ES query: {:?} to {:?}", json_query.to_string(), search_url);
+        debug!(
+            "sending ES query: {:?} to {:?}",
+            serde_json::to_string_pretty(&json_query).unwrap(),
+            search_url
+        );
 
         let body = Body::wrap_stream(stream::once(serde_json::to_string(&json_query)));
-        let req =
-            Request::builder()
-                .method(Method::POST)
-                .uri(search_url.to_string())
-                .body(body)
-                .expect("couldn't build a request!");
-
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(search_url.to_string())
+            .body(body)
+            .expect("couldn't build a request!");
 
         Box::new(expect::<EsResult<TimestampedMessage>>(&client, req).map(|es_res| es_res.into()))
     }
 }
-
-
