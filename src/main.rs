@@ -143,8 +143,6 @@ fn main() {
 
         );
 
-    //TODO: check if no argument has been supplied at all, in that case just print long help
-
     let matches = app.get_matches();
 
     match matches.subcommand_name() {
@@ -182,6 +180,7 @@ fn main() {
                 routing_key: routing_key,
                 body: body,
                 time_range: None,
+                exclude_replayed: true,
             };
             debug!("search query: {:?}", query);
 
@@ -224,6 +223,7 @@ fn main() {
                 routing_key: routing_key,
                 body: msg_body,
                 time_range: None,
+                exclude_replayed: true,
             };
 
             info!("search query: {:?}", query);

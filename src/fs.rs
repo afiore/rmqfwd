@@ -1,13 +1,17 @@
 use es::StoredMessage;
-use std::path::PathBuf;
 use failure::Error;
-use futures::{Future, future};
-use tokio::fs::file::File;
-use std::fs::{remove_dir_all, read_dir, create_dir};
+use futures::{future, Future};
 use serde_json;
+use std::fs::{create_dir, read_dir, remove_dir_all};
+use std::path::PathBuf;
+use tokio::fs::file::File;
 
 pub trait Export {
-   fn export_messages(&self, messages: Vec<StoredMessage>, target: PathBuf) -> Box<Future<Item=(), Error=Error> + Send>;
+    fn export_messages(
+        &self,
+        messages: Vec<StoredMessage>,
+        target: PathBuf,
+    ) -> Box<Future<Item = (), Error = Error> + Send>;
 }
 
 #[derive(Debug)]
@@ -26,7 +30,11 @@ impl Exporter {
 }
 
 impl Export for Exporter {
-    fn export_messages(&self, messages: Vec<StoredMessage>, target: PathBuf) -> Box<Future<Item=(), Error=Error> + Send> {
+    fn export_messages(
+        &self,
+        messages: Vec<StoredMessage>,
+        target: PathBuf,
+    ) -> Box<Future<Item = (), Error = Error> + Send> {
         let pretty_print = self.pretty_print;
         let force1 = self.force.clone();
         let force2 = self.force.clone();
@@ -36,49 +44,58 @@ impl Export for Exporter {
         let setup_target = future::lazy(move || {
             if !target.exists() {
                 info!("creating directory {}", target.display());
-                create_dir(target.clone()).map_err(|e| e.into()).map(|_| target)
+                create_dir(target.clone())
+                    .map_err(|e| e.into())
+                    .map(|_| target)
             } else {
-                read_dir(target.clone()).map_err(|e| e.into()).and_then(|mut entries| {
-                    if let Some(_) = entries.next() {
-                        if force1 {
-                            warn!("removing and re-creating target dir: {:?}", target.clone());
-                            remove_dir_all(target.clone())
-                                .and_then(|_| create_dir(target.clone()))
-                                .map_err(|e| e.into())
-                                .map(|_| target)
+                read_dir(target.clone())
+                    .map_err(|e| e.into())
+                    .and_then(|mut entries| {
+                        if let Some(_) = entries.next() {
+                            if force1 {
+                                warn!("removing and re-creating target dir: {:?}", target.clone());
+                                remove_dir_all(target.clone())
+                                    .and_then(|_| create_dir(target.clone()))
+                                    .map_err(|e| e.into())
+                                    .map(|_| target)
+                            } else {
+                                Err(format_err!(
+                                    "target directory {:?} already exists!",
+                                    target.display()
+                                ))
+                            }
                         } else {
-                            Err(format_err!("target directory {:?} already exists!", target.display()))
+                            Ok(target)
                         }
-                    } else { Ok(target) }
-                })
+                    })
             }
-
         });
 
         let run_export = move |target: PathBuf| {
-            Box::new(future::join_all(messages.into_iter().map(move |msg| {
-                let target = target.join(&format!("{}.json", msg.id));
+            Box::new(
+                future::join_all(messages.into_iter().map(move |msg| {
+                    let target = target.join(&format!("{}.json", msg.id));
 
-                future::lazy(move || {
-                    if target.exists() && !force2 {
-                        Err(format_err!("file {:?} already exists!", target.display()))
-                    } else {
-                        Ok(target)
-                    }
-                }).and_then(|target| {
-                    info!("exporting {:?}", target.display());
-                    File::create(target).from_err()
+                    future::lazy(move || {
+                        if target.exists() && !force2 {
+                            Err(format_err!("file {:?} already exists!", target.display()))
+                        } else {
+                            Ok(target)
+                        }
+                    }).and_then(|target| {
+                        info!("exporting {:?}", target.display());
+                        File::create(target).from_err()
+                    }).and_then(move |file| {
+                        let result = if pretty_print {
+                            serde_json::to_writer_pretty(file, &msg)
+                        } else {
+                            serde_json::to_writer(file, &msg)
+                        };
 
-                }).and_then(move |file| {
-                    let result = if pretty_print {
-                        serde_json::to_writer_pretty(file, &msg)
-                    } else {
-                        serde_json::to_writer(file, &msg)
-                    };
-
-                    result.map_err(|e| e.into())
-                })
-            })).map(|_| ()))
+                        result.map_err(|e| e.into())
+                    })
+                })).map(|_| ()),
+            )
         };
 
         Box::new(setup_target.and_then(|target| run_export(target.into())))
@@ -88,21 +105,24 @@ impl Export for Exporter {
 #[cfg(test)]
 mod test {
     extern crate tempdir;
-    use es::StoredMessage;
-    use rmq::{Message, Properties};
-    use lapin::types::AMQPValue;
+    use self::tempdir::TempDir;
     use chrono::prelude::*;
+    use es::StoredMessage;
+    use failure::Error;
     use fs::*;
-    use tokio::runtime::Runtime;
+    use lapin::types::AMQPValue;
+    use rmq::{Message, Properties};
     use serde_json;
     use std::fs::File;
     use std::path::PathBuf;
-    use failure::Error;
-    use self::tempdir::TempDir;
+    use tokio::runtime::Runtime;
 
     fn test_docs() -> Vec<StoredMessage> {
-         let doc1 = StoredMessage {
-            id: "A".to_string(), received_at: Utc::now(), message: Message {
+        let doc1 = StoredMessage {
+            id: "A".to_string(),
+            replayed: false,
+            received_at: Utc::now(),
+            message: Message {
                 routing_key: None,
                 exchange: "exchange-a".to_string(),
                 redelivered: false,
@@ -110,11 +130,14 @@ mod test {
                 headers: AMQPValue::Void,
                 properties: Properties::default(),
                 node: None,
-                routed_queues: Vec::new()
-            }
+                routed_queues: Vec::new(),
+            },
         };
         let doc2 = StoredMessage {
-            id: "B".to_string(), received_at: Utc::now(), message: Message {
+            id: "B".to_string(),
+            replayed: false,
+            received_at: Utc::now(),
+            message: Message {
                 routing_key: None,
                 exchange: "exchange-a".to_string(),
                 redelivered: false,
@@ -122,25 +145,33 @@ mod test {
                 headers: AMQPValue::Void,
                 properties: Properties::default(),
                 node: None,
-                routed_queues: Vec::new()
-            }
+                routed_queues: Vec::new(),
+            },
         };
         vec![doc1, doc2]
     }
 
-    fn assert_export_succeeds(result: Result<(), Error>, docs: Vec<StoredMessage>, target: PathBuf) {
+    fn assert_export_succeeds(
+        result: Result<(), Error>,
+        docs: Vec<StoredMessage>,
+        target: PathBuf,
+    ) {
         assert!(result.is_ok());
         for doc in docs {
             let file_path = target.join(format!("{}.json", doc.id.clone()));
-            let msg_file = File::open(file_path.clone()).expect(&format!("Cannot open file: {:?}", file_path.display()));
-            let parsed_doc: StoredMessage = serde_json::from_reader(msg_file).expect(&format!("Cannot parse file: {:?}", file_path.display()));
+            let msg_file = File::open(file_path.clone())
+                .expect(&format!("Cannot open file: {:?}", file_path.display()));
+            let parsed_doc: StoredMessage = serde_json::from_reader(msg_file)
+                .expect(&format!("Cannot parse file: {:?}", file_path.display()));
             assert_eq!(parsed_doc, doc);
         }
     }
 
     #[test]
     fn test_exports_messages_when_target_does_not_exist() {
-        let target = TempDir::new("export-dir").expect("cannot create tmpdir!").into_path();
+        let target = TempDir::new("export-dir")
+            .expect("cannot create tmpdir!")
+            .into_path();
 
         let docs = test_docs();
 
@@ -150,14 +181,15 @@ mod test {
         assert_export_succeeds(
             rt.block_on(exporter.export_messages(docs.to_vec(), target.clone())),
             docs,
-            target
+            target,
         );
     }
 
-
     #[test]
     fn test_fails_export_when_target_exists() {
-        let target = TempDir::new("export-dir").expect("cannot create tmpdir!").into_path();
+        let target = TempDir::new("export-dir")
+            .expect("cannot create tmpdir!")
+            .into_path();
         File::create(target.join("some-file.txt")).expect("Cannot write file!");
 
         let docs = test_docs();
@@ -165,14 +197,18 @@ mod test {
         let mut rt = Runtime::new().unwrap();
         let exporter = Exporter::new(false, false);
 
-        let error = rt.block_on(exporter.export_messages(docs.to_vec(), target.clone())).unwrap_err();
+        let error = rt
+            .block_on(exporter.export_messages(docs.to_vec(), target.clone()))
+            .unwrap_err();
         let error_msg = format!("{}", error);
         assert!(error_msg.contains("already exists"));
     }
 
     #[test]
     fn test_force_exports_messages_when_target_exist() {
-        let target = TempDir::new("other-export-dir").expect("cannot create tmpdir!").into_path();
+        let target = TempDir::new("other-export-dir")
+            .expect("cannot create tmpdir!")
+            .into_path();
         File::create(target.join("some-file.txt")).expect("Cannot write file!");
 
         let docs = test_docs();
@@ -184,9 +220,8 @@ mod test {
         assert_export_succeeds(
             rt.block_on(exporter.export_messages(docs.to_vec(), target.clone())),
             docs,
-            target
+            target,
         );
     }
 
 }
-

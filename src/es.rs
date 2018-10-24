@@ -54,6 +54,7 @@ impl Into<Vec<StoredMessage>> for EsResult<TimestampedMessage> {
             .map(|es_doc| StoredMessage {
                 id: es_doc._id,
                 received_at: es_doc._source.received_at,
+                replayed: es_doc._source.replayed,
                 message: es_doc._source.message,
             }).collect()
     }
@@ -63,6 +64,7 @@ impl Into<Vec<StoredMessage>> for EsResult<TimestampedMessage> {
 pub struct StoredMessage {
     pub received_at: DateTime<Utc>,
     pub message: Message,
+    pub replayed: bool,
     pub id: String,
 }
 
@@ -117,7 +119,9 @@ pub struct MessageQuery {
     pub exchange: String,
     pub body: Option<String>,
     pub routing_key: Option<String>,
+    //TODO: parse from cli
     pub time_range: Option<TimeRange>,
+    pub exclude_replayed: bool,
 }
 
 impl Into<Value> for MessageQuery {
@@ -150,17 +154,27 @@ impl Into<Value> for MessageQuery {
                 }
         }});
 
+        let filters = vec![
+            nested_obj,
+            json!({
+                "query": {
+                    "match": {
+                        "replayed": !self.exclude_replayed
+                    }
+                }
+            }),
+        ];
+
         json!({
             "query": {
                  "bool": {
-                     "must": [nested_obj]
+                     "must": filters
                  }
             }
         })
     }
 }
 
-//TODO: reimplement using plain Hyper client
 pub trait MessageSearchService {
     fn write(&self, rx: Receiver<TimestampedMessage>) -> Task;
     fn init_store(&self) -> Task;
@@ -177,6 +191,68 @@ impl MessageStore {
         MessageStore {
             config: Arc::new(config),
         }
+    }
+    fn create_index(&self) -> Task {
+        let client = Client::new();
+        let index_url = self.config.index_url().unwrap();
+        let mappings_url = self.config.mapping_url().unwrap();
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(index_url.to_string())
+            .body(Body::empty())
+            .expect("couldn't build a request!");
+
+        Box::new(expect_ok(&client, req).and_then(move |_| {
+            let mappings: serde_json::Value = json!({
+                "properties": {
+                    "replayed": {
+                        "type": "boolean",
+                        "index": "not_analyzed"
+                    },
+                    "received_at": {
+                        "type": "date",
+                        "index": "not_analyzed"
+                    },
+                    "message": {
+                        "type": "nested",
+                        "properties": {
+                            "exchange": {
+                                "type": "string",
+                                "index": "not_analyzed"
+                            },
+                            "routing_key": {
+                                "type": "string",
+                                "index": "not_analyzed"
+                            },
+                            "redelivered": {
+                                "type": "boolean",
+                                "index": "not_analyzed"
+                            },
+                            "uuid": {
+                                "type": "string",
+                                "index": "not_analyzed"
+                            },
+                            "headers": {
+                                "type": "object",
+                                "enabled": "false"
+                            }
+                        }
+                    }
+                }
+              });
+
+            let req = Request::builder()
+                .method(Method::PUT)
+                .uri(mappings_url.to_string())
+                .body(Body::wrap_stream(stream::once(serde_json::to_string(
+                    &mappings,
+                )))).expect("couldn't build a request!");
+
+            info!("sending request: {:?}", req);
+
+            expect_ok(&client, req)
+        }))
     }
 }
 
@@ -200,6 +276,13 @@ fn expect_ok(
         _ if status_code.is_success() => Ok(()),
         _ => http_err(&status_code, &s),
     })
+}
+
+fn is_ok(
+    client: &Client<HttpConnector, Body>,
+    req: Request<Body>,
+) -> Box<Future<Item = bool, Error = Error> + Send> {
+    handle_response(client, req, |status_code, _| Ok(status_code.is_success()))
 }
 
 fn expect_option<A: DeserializeOwned + Send + 'static>(
@@ -251,62 +334,30 @@ impl MessageSearchService for MessageStore {
     // NOTE: what happens when the mappings change?
     // ES provides a convenient API for that: https://www.elastic.co/guide/en/elasticsearch/reference/2.4/docs-reindex.html
     // perhaps this tool should automatically manage migrations by managing two indices at the same time...
+    //
+    // TODO: do not create the index if it already exists!
+    //
+
     fn init_store(&self) -> Task {
+        use futures::future;
         let client = Client::new();
         let index_url = self.config.index_url().unwrap();
-        let mappings_url = self.config.mapping_url().unwrap();
 
         let req = Request::builder()
-            .method(Method::POST)
+            .method(Method::HEAD)
             .uri(index_url.to_string())
             .body(Body::empty())
             .expect("couldn't build a request!");
 
-        Box::new(expect_ok(&client, req).and_then(move |_| {
-            let mappings: serde_json::Value = json!({
-                "properties": {
-                  "received_at": {
-                    "type": "date",
-                    "index": "not_analyzed"
-                  },
-                  "message": {
-                    "type": "nested",
-                    "properties": {
-                      "exchange": {
-                        "type": "string",
-                        "index": "not_analyzed"
-                      },
-                      "routing_key": {
-                        "type": "string",
-                        "index": "not_analyzed"
-                      },
-                      "redelivered": {
-                        "type": "boolean",
-                        "index": "not_analyzed"
-                      },
-                      "uuid": {
-                        "type": "string",
-                        "index": "not_analyzed"
-                      },
-                      "headers": {
-                        "type": "object",
-                        "enabled": "false"
-                      }
-                    }
-                  }
-                }
-              });
+        let create_index = self.create_index();
 
-            let req = Request::builder()
-                .method(Method::PUT)
-                .uri(mappings_url.to_string())
-                .body(Body::wrap_stream(stream::once(serde_json::to_string(
-                    &mappings,
-                )))).expect("couldn't build a request!");
-
-            info!("sending request: {:?}", req);
-
-            expect_ok(&client, req)
+        Box::new(is_ok(&client, req).and_then(|initalised| {
+            if initalised {
+                info!("store already initialised. Skipping index creation");
+                Box::new(future::ok::<(), Error>(()))
+            } else {
+                create_index
+            }
         }))
     }
 

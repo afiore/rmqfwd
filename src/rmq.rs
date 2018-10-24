@@ -21,17 +21,21 @@ use std::str;
 use tokio;
 use tokio::net::TcpStream;
 
+const REPLAYED_HEADER: &str = "X-Replayed";
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TimestampedMessage {
     pub received_at: DateTime<Utc>,
+    pub replayed: bool,
     pub message: Message,
 }
 
 impl TimestampedMessage {
     pub fn now(msg: Message) -> TimestampedMessage {
         TimestampedMessage {
-            message: msg,
+            replayed: msg.is_replayed(),
             received_at: Utc::now(),
+            message: msg,
         }
     }
 }
@@ -49,10 +53,14 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn basic_properties(&self) -> BasicProperties {
+    pub fn basic_properties(&self, replayed: bool) -> BasicProperties {
         let properties = self.properties.clone();
         let mut props = BasicProperties::default();
-        let headers = amqp_field_table(&self.headers);
+        let mut headers = amqp_field_table(&self.headers);
+
+        if replayed {
+            headers.insert(REPLAYED_HEADER.to_string(), AMQPValue::Boolean(true));
+        }
 
         if !headers.is_empty() {
             props = props.with_headers(headers);
@@ -91,6 +99,11 @@ impl Message {
             props = props.with_cluster_id(cluster_id);
         }
         props
+    }
+
+    pub fn is_replayed(&self) -> bool {
+        let headers = amqp_field_table(&self.headers);
+        headers.contains_key(REPLAYED_HEADER)
     }
 }
 
@@ -288,7 +301,8 @@ where
                         "replaying message: {:#?} to exchange: {:?} with routing key: {:?}",
                         stored, exchange, routing_key
                     );
-                    let basic_properties = stored.message.basic_properties();
+                    let is_replayed = true;
+                    let basic_properties = stored.message.basic_properties(is_replayed);
                     let msg_body = stored.message.body.into_bytes();
                     channel
                         .basic_publish(
@@ -298,7 +312,7 @@ where
                             BasicPublishOptions::default(),
                             basic_properties,
                         ).map(|confirmation| {
-                            println!("got confirmation of publication: {:?}", confirmation);
+                            debug!("got confirmation of publication: {:?}", confirmation);
                         })
                 })).map(|_| ())
             }).map_err(|e| e.into()),
