@@ -1,13 +1,17 @@
 # RMQ-FWD
 
-Rabbitmq sidecar program to listen to messages in the `amq.rabbitmq.trace` exchange and forward them to Elasticsearch
+Utility program to run as a Rabbitmq sidecard.
 
-**Warning:** this project is not feature complete, and is not recommended to use in production!
+Rmqfwd listens to messages published in the `amq.rabbitmq.trace` exchange and persists them to Elasticsearch.
+Once persisted, messages can be filtered, exported, and re-published.
+
+**Warning:** this project is not feature complete, and is not recommended to use for production purpuses!
 
 ## Usage
 
 ```
-rmqfwd 0.1.0                                                                                                                                                                                
+rmqfwd 0.1.0
+
 USAGE:
     rmqfwd [SUBCOMMAND]
 
@@ -16,10 +20,10 @@ FLAGS:
     -V, --version    Prints version information
 
 SUBCOMMANDS:
-    export    fetch a message from the store and write it to the file system
+    export    Query the message store and write the result to the file system
     help      Prints this message or the help of the given subcommand(s)
-    replay    replay a set of message ids
-    trace     bind a queue to 'amq.rabbitmq.trace' and persists received messages into the message store 
+    replay    Publish a subset of the messages in the data store
+    trace     Bind a queue to 'amq.rabbitmq.trace' and persists received messages into the message store
 ```
 
 ## Setup

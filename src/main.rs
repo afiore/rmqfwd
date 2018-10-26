@@ -34,7 +34,7 @@ fn main() {
                     .required(true)
                     .takes_value(true)
                     .short("e")
-                    .long_help("filter by exchange name")
+                    .long_help("Filter by exchange name")
             }
 
             pub fn msg_body() -> Arg<'static, 'static> {
@@ -42,7 +42,7 @@ fn main() {
                     .required(false)
                     .takes_value(true)
                     .short("b")
-                    .long_help("a string keyword to be matched against the message body")
+                    .long_help("A string keyword to be matched against the message body")
             }
 
             pub fn routing_key() -> Arg<'static, 'static> {
@@ -50,21 +50,21 @@ fn main() {
                     .required(false)
                     .takes_value(true)
                     .short("k")
-                    .long_help("filter by routing key")
+                    .long_help("Filter by routing key")
             }
 
             pub fn target_routing_key() -> Arg<'static, 'static> {
                 Arg::with_name("target-routing-key")
                     .required(false)
                     .takes_value(true)
-                    .long_help("the routing key to use when replying the messages")
+                    .long_help("The routing key to use when replying the messages")
             }
 
             pub fn target_exchange() -> Arg<'static, 'static> {
                 Arg::with_name("target-exchange")
                     .required(true)
                     .takes_value(true)
-                    .long_help("the exchange where the message will be published")
+                    .long_help("The exchange where the message will be published")
             }
         }
 
@@ -75,7 +75,7 @@ fn main() {
                     .required(true)
                     .takes_value(true)
                     .short("e")
-                    .long_help("the exchange where the message is published")
+                    .long_help("The exchange where the message is published")
             }
 
             pub fn msg_body() -> Arg<'static, 'static> {
@@ -83,7 +83,7 @@ fn main() {
                     .required(false)
                     .takes_value(true)
                     .short("b")
-                    .long_help("a string keyword to be matched against the message body")
+                    .long_help("A string keyword to be matched against the message body")
             }
 
             pub fn routing_key() -> Arg<'static, 'static> {
@@ -91,7 +91,7 @@ fn main() {
                     .required(false)
                     .takes_value(true)
                     .short("k")
-                    .long_help("the message routing key")
+                    .long_help("The message routing key")
             }
 
             pub fn target() -> Arg<'static, 'static> {
@@ -99,7 +99,7 @@ fn main() {
                     .index(1)
                     .required(true)
                     .takes_value(true)
-                    .long_help("the export target file")
+                    .long_help("The export target file")
             }
 
             pub fn pretty_print() -> Arg<'static, 'static> {
@@ -107,7 +107,7 @@ fn main() {
                     .short("p")
                     .required(false)
                     .takes_value(false)
-                    .long_help("pretty print message")
+                    .long_help("Pretty-print message")
             }
 
             pub fn force() -> Arg<'static, 'static> {
@@ -115,7 +115,7 @@ fn main() {
                     .short("f")
                     .required(false)
                     .takes_value(false)
-                    .long_help("force file writes, even when files exist in the target directory")
+                    .long_help("Force file writes, even when files exist in the target directory")
             }
         }
     }
@@ -126,18 +126,18 @@ fn main() {
         .subcommand(
             SubCommand
             ::with_name("trace")
-                .about("bind a queue to 'amq.rabbitmq.trace' and persists received messages into the message store "))
+                .about("Bind a queue to 'amq.rabbitmq.trace' and persists received messages into the message store "))
         .subcommand(
             SubCommand
             ::with_name("export")
-                .about("query the message store and write the result to the file system")
+                .about("Query the message store and write the result to the file system")
                 .args(&[arg::export::exchange(), arg::export::routing_key(), arg::export::msg_body(),
                         arg::export::target(), arg::export::pretty_print(), arg::export::force()])
         )
         .subcommand(
             SubCommand
             ::with_name("replay")
-                .about("replay a set of message ids")
+                .about("Publish a subset of the messages in the data store")
                 .args(&[arg::replay::exchange(), arg::replay::routing_key(), arg::replay::msg_body(),
                         arg::replay::target_exchange(), arg::replay::target_routing_key()])
 
