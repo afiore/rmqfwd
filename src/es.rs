@@ -119,7 +119,6 @@ pub struct MessageQuery {
     pub exchange: String,
     pub body: Option<String>,
     pub routing_key: Option<String>,
-    //TODO: parse from cli
     pub time_range: Option<TimeRange>,
     pub exclude_replayed: bool,
 }
@@ -154,7 +153,7 @@ impl Into<Value> for MessageQuery {
                 }
         }});
 
-        let filters = vec![
+        let mut filters = vec![
             nested_obj,
             json!({
                 "query": {
@@ -164,6 +163,32 @@ impl Into<Value> for MessageQuery {
                 }
             }),
         ];
+
+        for time_range in self.time_range {
+            let fmt = "%Y-%m-%d %H:%M:%S";
+            let es_fmt = "yyyy-MM-dd HH:mm:ss";
+            let filter = match time_range {
+                TimeRange::Within(start, end) => json!({
+                    "gte": start.format(fmt).to_string(), 
+                    "lte": end.format(fmt).to_string(),
+                    "format": es_fmt
+                }),
+                TimeRange::Since(start) => json!({
+                    "gte": start.format(fmt).to_string(),
+                    "format": es_fmt
+                }),
+                TimeRange::Until(end) => json!({
+                    "lte": end.format(fmt).to_string(),
+                    "format": es_fmt
+                }),
+            };
+
+            filters.push(json!({
+                "range": {
+                    "received_at": filter
+                }   
+            }));
+        }
 
         json!({
             "query": {
@@ -405,7 +430,7 @@ impl MessageSearchService for MessageStore {
         let search_url = self.config.search_url().unwrap();
         let json_query: Value = query.into();
         debug!(
-            "sending ES query: {:?} to {:?}",
+            "sending ES query: {} to {:?}",
             serde_json::to_string_pretty(&json_query).unwrap(),
             search_url
         );
