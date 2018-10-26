@@ -4,6 +4,7 @@ extern crate futures;
 extern crate rmqfwd;
 extern crate tokio;
 extern crate tokio_codec;
+extern crate try_from;
 
 #[macro_use]
 extern crate log;
@@ -18,6 +19,7 @@ use rmqfwd::es::{MessageQuery, MessageSearchService, MessageStore};
 use rmqfwd::fs::*;
 use rmqfwd::rmq;
 use rmqfwd::rmq::{Config, TimestampedMessage};
+use rmqfwd::TimeRangeError;
 use std::io::Write;
 use std::path::PathBuf;
 use tokio::runtime::Runtime;
@@ -26,6 +28,25 @@ fn main() {
     env_logger::init();
 
     pub(crate) mod arg {
+        pub mod common {
+            use clap::Arg;
+            pub fn since() -> Arg<'static, 'static> {
+                Arg::with_name("since")
+                    .required(false)
+                    .takes_value(true)
+                    .short("s")
+                    .long_help("Include only messages published since the supplied datetime")
+            }
+
+            pub fn until() -> Arg<'static, 'static> {
+                Arg::with_name("until")
+                    .required(false)
+                    .takes_value(true)
+                    .short("u")
+                    .long_help("Include only messages published before the supplied datetime")
+            }
+
+        }
         pub mod replay {
             use clap::Arg;
 
@@ -131,14 +152,16 @@ fn main() {
             SubCommand
             ::with_name("export")
                 .about("Query the message store and write the result to the file system")
-                .args(&[arg::export::exchange(), arg::export::routing_key(), arg::export::msg_body(),
+                .args(&[arg::common::since(), arg::common::until(),
+                        arg::export::exchange(), arg::export::routing_key(), arg::export::msg_body(),
                         arg::export::target(), arg::export::pretty_print(), arg::export::force()])
         )
         .subcommand(
             SubCommand
             ::with_name("replay")
                 .about("Publish a subset of the messages in the data store")
-                .args(&[arg::replay::exchange(), arg::replay::routing_key(), arg::replay::msg_body(),
+                .args(&[arg::common::since(), arg::common::until(),
+                        arg::replay::exchange(), arg::replay::routing_key(), arg::replay::msg_body(),
                         arg::replay::target_exchange(), arg::replay::target_routing_key()])
 
         );
@@ -165,6 +188,8 @@ fn main() {
             let exchange = matches.value_of("exchange").unwrap().to_string();
             let routing_key = matches.value_of("routing-key").map(|s| s.to_string());
             let body = matches.value_of("message-body").map(|s| s.to_string());
+            let since = matches.value_of("since").map(|s| s.to_string());
+            let until = matches.value_of("until").map(|s| s.to_string());
 
             let target: PathBuf = matches.value_of_os("target").unwrap().clone().into();
             debug!("matches: {:?}", matches);
@@ -175,31 +200,43 @@ fn main() {
             let exporter = Exporter::new(pretty_print, force);
 
             let mut rt = Runtime::new().unwrap();
+
+            let (time_range, err_ctx) = match try_from::TryFrom::try_from((since, until)) {
+                Ok(time_range) => (Some(time_range), None),
+                Err(TimeRangeError::NoInputSupplied) => (None, None),
+                Err(TimeRangeError::InvalidFormat { supplied }) => (None, Some(supplied)),
+            };
+
             let query = MessageQuery {
                 exchange: exchange,
                 routing_key: routing_key,
                 body: body,
-                time_range: None,
+                time_range: time_range,
                 exclude_replayed: true,
             };
-            debug!("search query: {:?}", query);
 
-            let result = rt.block_on(
-                msg_store
-                    .search(query)
-                    .and_then(move |docs| exporter.export_messages(docs, target)),
-            );
-            match result {
-                Ok(_) => info!("export completed."),
-                Err(e) => {
-                    error!("Failed to export: {}", e);
-                    std::process::exit(1);
+            if let Some(err_msg) = err_ctx {
+                error!(
+                    "Couldn't parse a time range from suppleid --since/--until values: {}",
+                    err_msg
+                );
+                std::process::exit(1);
+            } else {
+                let result = rt.block_on(
+                    msg_store
+                        .search(query)
+                        .and_then(move |docs| exporter.export_messages(docs, target)),
+                );
+                match result {
+                    Ok(_) => info!("export completed."),
+                    Err(e) => {
+                        error!("Failed to export: {}", e);
+                        std::process::exit(1);
+                    }
                 }
             }
         }
 
-        //TODO:
-        // - flag replayed items so that they are excluded from default searches
         Some("replay") => {
             let matches = matches.subcommand_matches("replay").unwrap();
 

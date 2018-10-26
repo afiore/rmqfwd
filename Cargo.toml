@@ -21,7 +21,7 @@ hyper = "0.12"
 url = "1.7"
 failure = "0.1"
 failure_derive = "0.1"
-pretty = "0.5"
+try_from = "0.2"
 
 [dev-dependencies]
 tempdir = "0.3"
