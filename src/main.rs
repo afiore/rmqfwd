@@ -15,7 +15,7 @@ use clap::{App, SubCommand};
 use futures::prelude::*;
 use futures::sync::mpsc;
 use rmqfwd::es;
-use rmqfwd::es::{MessageQuery, MessageSearchService, MessageStore};
+use rmqfwd::es::{MessageQueryBuilder, MessageSearchService, MessageStore};
 use rmqfwd::fs::*;
 use rmqfwd::rmq;
 use rmqfwd::rmq::{Config, TimestampedMessage};
@@ -207,13 +207,16 @@ fn main() {
                 Err(TimeRangeError::InvalidFormat { supplied }) => (None, Some(supplied)),
             };
 
-            let query = MessageQuery {
-                exchange: exchange,
-                routing_key: routing_key,
-                body: body,
-                time_range: time_range,
-                exclude_replayed: true,
-            };
+            let mut query = MessageQueryBuilder::with_exchange(exchange);
+            for key in routing_key {
+                query = query.with_routing_key(key);
+            }
+            for body in body {
+                query = query.with_body(body);
+            }
+            for time_range in time_range {
+                query = query.with_time_range(time_range);
+            }
 
             if let Some(err_msg) = err_ctx {
                 error!(
@@ -224,7 +227,7 @@ fn main() {
             } else {
                 let result = rt.block_on(
                     msg_store
-                        .search(query)
+                        .search(query.build())
                         .and_then(move |docs| exporter.export_messages(docs, target)),
                 );
                 match result {
@@ -247,6 +250,9 @@ fn main() {
             let msg_body = matches.value_of("message-body").map(|s| s.to_string());
             let routing_key = matches.value_of("routing-key").map(|s| s.to_string());
 
+            let since = matches.value_of("since").map(|s| s.to_string());
+            let until = matches.value_of("until").map(|s| s.to_string());
+
             let target_exchange = matches
                 .value_of("target-exchange")
                 .expect("expected 'target-exchange' argument")
@@ -255,34 +261,54 @@ fn main() {
                 .value_of("target-routing-key")
                 .map(|s| s.to_string());
 
-            let query = MessageQuery {
-                exchange: exchange,
-                routing_key: routing_key,
-                body: msg_body,
-                time_range: None,
-                exclude_replayed: true,
+            let (time_range, err_ctx) = match try_from::TryFrom::try_from((since, until)) {
+                Ok(time_range) => (Some(time_range), None),
+                Err(TimeRangeError::NoInputSupplied) => (None, None),
+                Err(TimeRangeError::InvalidFormat { supplied }) => (None, Some(supplied)),
             };
 
-            info!("search query: {:?}", query);
-
-            let mut rt = Runtime::new().unwrap();
-            let msg_store = MessageStore::new(es::Config::default());
-
-            let result = rt.block_on(Box::new(msg_store.search(query).and_then(|stored_msgs| {
-                rmq::publish(
-                    rmq::Config::default(),
-                    target_exchange,
-                    target_routing_key,
-                    stored_msgs,
-                )
-            })));
-
-            match result {
-                Err(err) => {
-                    error!("Couldn't replay messages. Error: {:?}", err);
-                    std::process::exit(1);
+            if let Some(err_msg) = err_ctx {
+                error!(
+                    "Couldn't parse a time range from suppleid --since/--until values: {}",
+                    err_msg
+                );
+                std::process::exit(1);
+            } else {
+                let mut query = MessageQueryBuilder::with_exchange(exchange);
+                for key in routing_key {
+                    query = query.with_routing_key(key);
                 }
-                Ok(_) => info!("done."),
+                for body in msg_body {
+                    query = query.with_body(body);
+                }
+                for time_range in time_range {
+                    query = query.with_time_range(time_range);
+                }
+
+                let query = query.build();
+
+                info!("search query: {:?}", query);
+
+                let mut rt = Runtime::new().unwrap();
+                let msg_store = MessageStore::new(es::Config::default());
+
+                let result =
+                    rt.block_on(Box::new(msg_store.search(query).and_then(|stored_msgs| {
+                        rmq::publish(
+                            rmq::Config::default(),
+                            target_exchange,
+                            target_routing_key,
+                            stored_msgs,
+                        )
+                    })));
+
+                match result {
+                    Err(err) => {
+                        error!("Couldn't replay messages. Error: {:?}", err);
+                        std::process::exit(1);
+                    }
+                    Ok(_) => info!("done."),
+                }
             }
         }
         _ => {

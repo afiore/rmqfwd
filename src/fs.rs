@@ -106,49 +106,22 @@ impl Export for Exporter {
 mod test {
     extern crate tempdir;
     use self::tempdir::TempDir;
-    use chrono::prelude::*;
+    use es::test::MessageBuilder;
     use es::StoredMessage;
     use failure::Error;
     use fs::*;
-    use lapin::types::AMQPValue;
-    use rmq::{Message, Properties};
-    use serde_json;
     use std::fs::File;
     use std::path::PathBuf;
     use tokio::runtime::Runtime;
 
     fn test_docs() -> Vec<StoredMessage> {
-        let doc1 = StoredMessage {
-            id: "A".to_string(),
-            replayed: false,
-            received_at: Utc::now(),
-            message: Message {
-                routing_key: None,
-                exchange: "exchange-a".to_string(),
-                redelivered: false,
-                body: "message A".to_string(),
-                headers: AMQPValue::Void,
-                properties: Properties::default(),
-                node: None,
-                routed_queues: Vec::new(),
-            },
-        };
-        let doc2 = StoredMessage {
-            id: "B".to_string(),
-            replayed: false,
-            received_at: Utc::now(),
-            message: Message {
-                routing_key: None,
-                exchange: "exchange-a".to_string(),
-                redelivered: false,
-                body: "message B".to_string(),
-                headers: AMQPValue::Void,
-                properties: Properties::default(),
-                node: None,
-                routed_queues: Vec::new(),
-            },
-        };
-        vec![doc1, doc2]
+        let doc1 =
+            MessageBuilder::published_on("a".to_string(), "test-exchange".to_string()).build();
+        let doc2 =
+            MessageBuilder::published_on("b".to_string(), "test-exchange".to_string()).build();
+        let doc3 =
+            MessageBuilder::published_on("c".to_string(), "test-exchange".to_string()).build();
+        vec![doc1, doc2, doc3]
     }
 
     fn assert_export_succeeds(

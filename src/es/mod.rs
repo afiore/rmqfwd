@@ -3,15 +3,11 @@ use failure::Error;
 use futures::stream;
 use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
-use hyper::client::HttpConnector;
 use hyper::Body;
-use hyper::Chunk;
 use hyper::Client;
 use hyper::Method;
 use hyper::Request;
-use hyper::StatusCode;
 use rmq::{Message, TimestampedMessage};
-use serde::de::DeserializeOwned;
 use serde_json;
 use serde_json::Value;
 use std::boxed::Box;
@@ -19,15 +15,26 @@ use std::sync::Arc;
 use url::{ParseError, Url};
 use TimeRange;
 
+mod http;
 pub type Task = Box<Future<Item = (), Error = Error> + Send>;
 pub type IoFuture<A> = Box<Future<Item = A, Error = Error> + Send>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
     //TODO: add support for TLS
     base_url: String,
     index: String,
     doc_type: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            base_url: "http://localhost:9200".to_string(),
+            index: "rabbit_messages".to_string(),
+            doc_type: "message".to_string(),
+        }
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -38,6 +45,7 @@ pub struct EsDoc<A> {
 
 #[derive(Deserialize, Debug)]
 pub struct EsHits<A> {
+    pub total: usize,
     pub hits: Vec<EsDoc<A>>,
 }
 
@@ -48,6 +56,7 @@ pub struct EsResult<A> {
 
 impl Into<Vec<StoredMessage>> for EsResult<TimestampedMessage> {
     fn into(self) -> Vec<StoredMessage> {
+        println!("found {} results", self.hits.total);
         self.hits
             .hits
             .into_iter()
@@ -68,11 +77,22 @@ pub struct StoredMessage {
     pub id: String,
 }
 
+impl Into<TimestampedMessage> for StoredMessage {
+    fn into(self) -> TimestampedMessage {
+        TimestampedMessage {
+            received_at: self.received_at,
+            message: self.message,
+            replayed: self.replayed,
+        }
+    }
+}
+
 trait EsEndpoints {
     fn message_url(&self, id: Option<String>) -> Result<Url, ParseError>;
     fn index_url(&self) -> Result<Url, ParseError>;
     fn mapping_url(&self) -> Result<Url, ParseError>;
     fn search_url(&self) -> Result<Url, ParseError>;
+    fn flush_url(&self) -> Result<Url, ParseError>;
 }
 
 impl EsEndpoints for Config {
@@ -91,6 +111,12 @@ impl EsEndpoints for Config {
         Url::parse(&self.base_url).and_then(|u| u.join(&format!("{}/", &self.index)))
     }
 
+    fn flush_url(&self) -> Result<Url, ParseError> {
+        let index_url = self.index_url()?;
+        let flush_url = index_url.join("_flush")?;
+        Ok(flush_url)
+    }
+
     fn mapping_url(&self) -> Result<Url, ParseError> {
         let index_url = self.index_url()?;
         let mapping_url = index_url.join(&format!("_mapping/{}/", &self.doc_type))?;
@@ -104,16 +130,6 @@ impl EsEndpoints for Config {
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            base_url: "http://localhost:9200".to_string(),
-            index: "rabbit_messages".to_string(),
-            doc_type: "message".to_string(),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct MessageQuery {
     pub exchange: String,
@@ -121,6 +137,43 @@ pub struct MessageQuery {
     pub routing_key: Option<String>,
     pub time_range: Option<TimeRange>,
     pub exclude_replayed: bool,
+}
+
+pub struct MessageQueryBuilder {
+    query: MessageQuery,
+}
+
+impl MessageQueryBuilder {
+    pub fn with_exchange(exchange: String) -> Self {
+        MessageQueryBuilder {
+            query: MessageQuery {
+                exchange: exchange,
+                body: None,
+                routing_key: None,
+                time_range: None,
+                exclude_replayed: true,
+            },
+        }
+    }
+
+    pub fn with_routing_key(mut self, key: String) -> Self {
+        self.query.routing_key = Some(key);
+        self
+    }
+
+    pub fn with_time_range(mut self, time_range: TimeRange) -> Self {
+        self.query.time_range = Some(time_range);
+        self
+    }
+
+    pub fn with_body(mut self, body: String) -> Self {
+        self.query.body = Some(body);
+        self
+    }
+
+    pub fn build(self) -> MessageQuery {
+        self.query
+    }
 }
 
 impl Into<Value> for MessageQuery {
@@ -133,7 +186,7 @@ impl Into<Value> for MessageQuery {
 
         for key in self.routing_key {
             nested.push(json!({
-              "match": {"message.routing-key": key }
+              "match": {"message.routing_key": key }
             }));
         }
         for body in self.body {
@@ -186,7 +239,7 @@ impl Into<Value> for MessageQuery {
             filters.push(json!({
                 "range": {
                     "received_at": filter
-                }   
+                }
             }));
         }
 
@@ -204,6 +257,8 @@ pub trait MessageSearchService {
     fn write(&self, rx: Receiver<TimestampedMessage>) -> Task;
     fn init_store(&self) -> Task;
     fn search(&self, query: MessageQuery) -> IoFuture<Vec<StoredMessage>>;
+
+    //NOTE: this might be obsolete
     fn message_for(&self, id: String) -> IoFuture<Option<StoredMessage>>;
 }
 
@@ -228,7 +283,7 @@ impl MessageStore {
             .body(Body::empty())
             .expect("couldn't build a request!");
 
-        Box::new(expect_ok(&client, req).and_then(move |_| {
+        Box::new(http::expect_ok(&client, req).and_then(move |_| {
             let mappings: serde_json::Value = json!({
                 "properties": {
                     "replayed": {
@@ -274,85 +329,11 @@ impl MessageStore {
                     &mappings,
                 )))).expect("couldn't build a request!");
 
-            info!("sending request: {:?}", req);
+            debug!("sending request: {:?}", req);
 
-            expect_ok(&client, req)
+            http::expect_ok(&client, req)
         }))
     }
-}
-
-fn http_err<A: DeserializeOwned + Send + 'static>(
-    status: &StatusCode,
-    body: &Chunk,
-) -> Result<A, Error> {
-    let body = String::from_utf8_lossy(&body.to_vec()).to_string();
-    Err(format_err!(
-        "Elasticsearch responded with non successful status code: {:?}. Message: {}",
-        status,
-        body
-    ))
-}
-
-fn expect_ok(
-    client: &Client<HttpConnector, Body>,
-    req: Request<Body>,
-) -> Box<Future<Item = (), Error = Error> + Send> {
-    handle_response(client, req, |status_code, s| match status_code {
-        _ if status_code.is_success() => Ok(()),
-        _ => http_err(&status_code, &s),
-    })
-}
-
-fn is_ok(
-    client: &Client<HttpConnector, Body>,
-    req: Request<Body>,
-) -> Box<Future<Item = bool, Error = Error> + Send> {
-    handle_response(client, req, |status_code, _| Ok(status_code.is_success()))
-}
-
-fn expect_option<A: DeserializeOwned + Send + 'static>(
-    client: &Client<HttpConnector, Body>,
-    req: Request<Body>,
-) -> Box<Future<Item = Option<A>, Error = Error> + Send> {
-    handle_response(client, req, |status_code, s| match status_code {
-        _ if status_code.is_success() => serde_json::from_slice(s)
-            .map(|a| Some(a))
-            .map_err(|e| e.into()),
-        _ if status_code.as_u16() == 404 => Ok(None),
-        _ => http_err(&status_code, &s),
-    })
-}
-
-fn expect<A: DeserializeOwned + Send + 'static>(
-    client: &Client<HttpConnector, Body>,
-    req: Request<Body>,
-) -> Box<Future<Item = A, Error = Error> + Send> {
-    handle_response(client, req, |status_code, s| match status_code {
-        _ if status_code.is_success() => serde_json::from_slice(s).map_err(|e| e.into()),
-        _ => http_err(&status_code, &s),
-    })
-}
-
-fn handle_response<A, F>(
-    client: &Client<HttpConnector, Body>,
-    req: Request<Body>,
-    handle_body: F,
-) -> Box<Future<Item = A, Error = Error> + Send>
-where
-    A: DeserializeOwned + Send + 'static,
-    F: Fn(&StatusCode, &Chunk) -> Result<A, Error> + Send + Sync + 'static,
-{
-    Box::new(
-        client
-            .request(req)
-            .and_then(|res| {
-                let status = res.status();
-                res.into_body()
-                    .concat2()
-                    .map(move |chunks| (status, chunks))
-            }).map_err(|e| e.into())
-            .and_then(move |(status, body)| handle_body(&status, &body)),
-    )
 }
 
 impl MessageSearchService for MessageStore {
@@ -376,7 +357,7 @@ impl MessageSearchService for MessageStore {
 
         let create_index = self.create_index();
 
-        Box::new(is_ok(&client, req).and_then(|initalised| {
+        Box::new(http::is_ok(&client, req).and_then(|initalised| {
             if initalised {
                 info!("store already initialised. Skipping index creation");
                 Box::new(future::ok::<(), Error>(()))
@@ -398,7 +379,7 @@ impl MessageSearchService for MessageStore {
                     let mut req = Request::builder();
 
                     req.method(Method::POST).uri(ep_url.clone());
-                    expect_ok(
+                    http::expect_ok(
                         &client,
                         req.body(body)
                             .expect(&format!("couldn't build HTTP request {:?}", msg)),
@@ -417,7 +398,7 @@ impl MessageSearchService for MessageStore {
             .expect("couldn't build a request!");
 
         Box::new(
-            expect_option::<EsDoc<StoredMessage>>(&client, req)
+            http::expect_option::<EsDoc<StoredMessage>>(&client, req)
                 .map(|maybe_doc| maybe_doc.map(|doc| doc._source)),
         )
     }
@@ -429,7 +410,7 @@ impl MessageSearchService for MessageStore {
         let client = Client::new();
         let search_url = self.config.search_url().unwrap();
         let json_query: Value = query.into();
-        debug!(
+        info!(
             "sending ES query: {} to {:?}",
             serde_json::to_string_pretty(&json_query).unwrap(),
             search_url
@@ -442,6 +423,217 @@ impl MessageSearchService for MessageStore {
             .body(body)
             .expect("couldn't build a request!");
 
-        Box::new(expect::<EsResult<TimestampedMessage>>(&client, req).map(|es_res| es_res.into()))
+        Box::new(
+            http::expect::<EsResult<TimestampedMessage>>(&client, req).map(|es_res| es_res.into()),
+        )
+    }
+}
+
+#[cfg(test)]
+pub mod test {
+    extern crate env_logger;
+    use chrono::prelude::*;
+    use es::*;
+    use futures::Future;
+    use futures::{future, stream};
+    use hyper::{Body, Client, Method, Request};
+    use lapin::types::AMQPValue;
+    use rmq::{Message, Properties};
+    use serde_json;
+    use std::thread::sleep;
+    use std::time::Duration;
+    use tokio::runtime::Runtime;
+
+    fn reset_store(config: Config) -> IoFuture<MessageStore> {
+        let client = Client::new();
+        let store = MessageStore::new(config.clone());
+        let index_url = config.index_url().unwrap().to_string();
+
+        let head_req = Request::builder()
+            .method(Method::HEAD)
+            .uri(index_url.to_string())
+            .body(Body::empty())
+            .expect("couldn't build a request!");
+
+        Box::new(http::is_ok(&client, head_req).and_then(move |initialised| {
+            let clean = if initialised {
+                let delete_req = Request::builder()
+                    .uri(index_url)
+                    .method(Method::DELETE)
+                    .body(Body::empty())
+                    .expect("couldn't build DELETE request");
+
+                debug!("deleting store ...");
+                http::expect_ok(&client, delete_req)
+            } else {
+                Box::new(future::lazy(|| Ok(())))
+            };
+
+            Box::new(clean.and_then(move |_| store.init_store().map(move |_| store)))
+        }))
+    }
+
+    //TODO: borrow config
+    fn create_msgs(config: Config, msgs: Vec<StoredMessage>) -> IoFuture<MessageStore> {
+        let flush_url = config.flush_url().unwrap();
+
+        Box::new(reset_store(config.clone()).and_then(|store| {
+            debug!("creating test messages ...");
+
+            let client = Client::new();
+            future::join_all(msgs.into_iter().map(move |msg| {
+                let msg_url = config.message_url(Some(msg.id.clone())).unwrap();
+                let msg: TimestampedMessage = msg.into();
+                let msg_json = Body::wrap_stream(stream::once(serde_json::to_string_pretty(&msg)));
+                let req = Request::builder()
+                    .uri(msg_url.to_string())
+                    .method(Method::PUT)
+                    .body(msg_json)
+                    .expect("couldn't build a request!");
+
+                http::expect_ok(&client, req)
+            })).and_then(move |_| {
+                let client = Client::new();
+                let req = Request::builder()
+                    .uri(flush_url.to_string())
+                    .method(Method::POST)
+                    .body(Body::empty())
+                    .expect("couldn't build a request!");
+
+                http::expect_ok(&client, req)
+            }).map(|_| store)
+        }))
+    }
+
+    //TODO: borrow messages
+    fn init_test_store(rt: &mut Runtime, msgs: Vec<StoredMessage>) -> MessageStore {
+        let config = Config {
+            index: "rabbit_messages_test".to_string(),
+            ..Config::default()
+        };
+
+        let result = rt.block_on(create_msgs(config, msgs));
+
+        match result {
+            Ok(store) => store,
+            Err(e) => panic!("Couldn't initialise test message store: {:?}", e),
+        }
+    }
+
+    pub struct MessageBuilder {
+        inner: StoredMessage,
+    }
+
+    impl MessageBuilder {
+        pub fn published_on(id: String, exchange: String) -> Self {
+            MessageBuilder {
+                inner: StoredMessage {
+                    id: id.clone(),
+                    replayed: false,
+                    received_at: Utc::now(),
+                    message: Message {
+                        routing_key: None,
+                        exchange: exchange,
+                        redelivered: false,
+                        body: format!("message with id: {}", id).to_string(),
+                        headers: AMQPValue::Void,
+                        properties: Properties::default(),
+                        node: None,
+                        routed_queues: Vec::new(),
+                    },
+                },
+            }
+        }
+
+        pub fn build(self) -> StoredMessage {
+            self.inner
+        }
+
+        pub fn _as_replayed(mut self) -> Self {
+            self.inner.replayed = true;
+            self
+        }
+
+        pub fn _received_at(mut self, at: DateTime<Utc>) -> Self {
+            self.inner.received_at = at;
+            self
+        }
+
+        pub fn _with_body(mut self, body: String) -> Self {
+            self.inner.message.body = body;
+            self
+        }
+
+        pub fn _routed_to_queue(mut self, queue: String) -> Self {
+            {
+                let ref mut routed_queues = self.inner.message.routed_queues;
+                if !routed_queues.contains(&queue) {
+                    routed_queues.push(queue);
+                }
+            }
+            self
+        }
+
+        pub fn with_routing_key(mut self, key: String) -> Self {
+            self.inner.message.routing_key = Some(key);
+            self
+        }
+    }
+
+    #[test]
+    fn filter_by_exchange_works() {
+        let mut rt = Runtime::new().unwrap();
+        let msgs = vec![
+            MessageBuilder::published_on("a".to_owned(), "exchange-2".to_owned()).build(),
+            MessageBuilder::published_on("b".to_owned(), "exchange-1".to_owned()).build(),
+            MessageBuilder::published_on("c".to_owned(), "exchange-1".to_owned()).build(),
+        ];
+
+        let mut msgs_expected = Vec::new();
+        for stored_msg in msgs.iter().skip(1) {
+            msgs_expected.push(stored_msg.message.clone());
+        }
+
+        let store = init_test_store(&mut rt, msgs);
+        let query = MessageQueryBuilder::with_exchange("exchange-1".to_owned()).build();
+
+        let mut msgs_found: Vec<Message> = rt
+            .block_on(store.search(query))
+            .expect("search result expected")
+            .into_iter()
+            .map(|stored| stored.message)
+            .collect();
+
+        msgs_found.sort_by(|a, b| a.body.cmp(&b.body));
+        msgs_expected.sort_by(|a, b| a.body.cmp(&b.body));
+        assert_eq!(msgs_expected, msgs_found);
+    }
+
+    #[test]
+    fn filter_by_exchange_routing_key_works() {
+        let mut rt = Runtime::new().unwrap();
+        let msgs = vec![
+            MessageBuilder::published_on("a".to_owned(), "exchange-2".to_owned()).build(),
+            MessageBuilder::published_on("b".to_owned(), "exchange-1".to_owned())
+                .with_routing_key("test-key".to_string())
+                .build(),
+            MessageBuilder::published_on("c".to_owned(), "exchange-1".to_owned()).build(),
+        ];
+
+        let msgs_expected = vec![msgs[1].message.clone()];
+
+        let store = init_test_store(&mut rt, msgs);
+        let query = MessageQueryBuilder::with_exchange("exchange-1".to_owned())
+            .with_routing_key("test-key".to_owned())
+            .build();
+
+        let msgs_found: Vec<Message> = rt
+            .block_on(store.search(query))
+            .expect("search result expected")
+            .into_iter()
+            .map(|stored| stored.message)
+            .collect();
+
+        assert_eq!(msgs_expected, msgs_found);
     }
 }
