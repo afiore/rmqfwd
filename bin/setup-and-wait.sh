@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-docker-compose up &
+docker-compose up -d 
 
 attempts=0
 while [ $attempts -lt 10 ]
