@@ -3,8 +3,7 @@ langauge: rust
 rust:
   - stable
 
-cache:
-  - cargo:
+cache: cargo
 
 script:
   - cargo build --verbose --all
