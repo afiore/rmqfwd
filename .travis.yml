@@ -10,10 +10,8 @@ script:
   - cargo test --verbose -- --test-threads=1
 
 services:
-  - elasticsearch
+  - docker
 
 before_script:
+  - docker-compose up
   - sleep 10 #TODO: poll ES using nc or curl
-
-before_install:
-- curl -O https://download.elastic.co/elasticsearch/release/org/elasticsearch/distribution/deb/elasticsearch/2.3.0/elasticsearch-2.3.0.deb && sudo dpkg -i --force-confnew elasticsearch-2.3.0.deb
