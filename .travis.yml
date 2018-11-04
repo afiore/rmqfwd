@@ -13,5 +13,4 @@ services:
   - docker
 
 before_script:
-  - docker-compose up
-  - sleep 10 #TODO: poll ES using nc or curl
+  - ./bin/setup-and-wait.sh
