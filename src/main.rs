@@ -12,14 +12,15 @@ extern crate log;
 extern crate clap;
 
 use clap::{App, SubCommand};
+use failure::Error;
 use futures::prelude::*;
 use futures::sync::mpsc;
 use rmqfwd::es;
-use rmqfwd::es::{MessageQueryBuilder, MessageSearchService, MessageStore};
+use rmqfwd::es::MessageQuery;
+use rmqfwd::es::{MessageSearchService, MessageStore};
 use rmqfwd::fs::*;
 use rmqfwd::rmq;
 use rmqfwd::rmq::{Config, TimestampedMessage};
-use rmqfwd::TimeRangeError;
 use std::io::Write;
 use std::path::PathBuf;
 use tokio::runtime::Runtime;
@@ -185,56 +186,34 @@ fn main() {
         }
         Some("export") => {
             let matches = matches.subcommand_matches("export").unwrap();
-            let exchange = matches.value_of("exchange").unwrap().to_string();
-            let routing_key = matches.value_of("routing-key").map(|s| s.to_string());
-            let body = matches.value_of("message-body").map(|s| s.to_string());
-            let since = matches.value_of("since").map(|s| s.to_string());
-            let until = matches.value_of("until").map(|s| s.to_string());
 
             let target: PathBuf = matches.value_of_os("target").unwrap().clone().into();
-            debug!("matches: {:?}", matches);
             let pretty_print = matches.occurrences_of("pretty-print") > 0;
             let force = matches.occurrences_of("force") > 0;
 
             let msg_store = MessageStore::new(es::Config::default());
             let exporter = Exporter::new(pretty_print, force);
+            let result: Result<MessageQuery, Error> = try_from::TryFrom::try_from(matches);
 
-            let mut rt = Runtime::new().unwrap();
-
-            let (time_range, err_ctx) = match try_from::TryFrom::try_from((since, until)) {
-                Ok(time_range) => (Some(time_range), None),
-                Err(TimeRangeError::NoInputSupplied) => (None, None),
-                Err(TimeRangeError::InvalidFormat { supplied }) => (None, Some(supplied)),
-            };
-
-            let mut query = MessageQueryBuilder::with_exchange(exchange);
-            for key in routing_key {
-                query = query.with_routing_key(key);
-            }
-            for body in body {
-                query = query.with_body(body);
-            }
-            for time_range in time_range {
-                query = query.with_time_range(time_range);
-            }
-
-            if let Some(err_msg) = err_ctx {
-                error!(
-                    "Couldn't parse a time range from suppleid --since/--until values: {}",
-                    err_msg
-                );
-                std::process::exit(1);
-            } else {
-                let result = rt.block_on(
-                    msg_store
-                        .search(query.build())
-                        .and_then(move |docs| exporter.export_messages(docs, target)),
-                );
-                match result {
-                    Ok(_) => info!("export completed."),
-                    Err(e) => {
-                        error!("Failed to export: {}", e);
-                        std::process::exit(1);
+            match result {
+                Err(_) => {
+                    //TODO: display value here
+                    error!("Couldn't parse a time range from supplied --since/--until values");
+                    std::process::exit(1);
+                }
+                Ok(query) => {
+                    let mut rt = Runtime::new().unwrap();
+                    let result = rt.block_on(
+                        msg_store
+                            .search(query)
+                            .and_then(move |docs| exporter.export_messages(docs, target)),
+                    );
+                    match result {
+                        Ok(_) => info!("export completed."),
+                        Err(e) => {
+                            error!("Failed to export: {}", e);
+                            std::process::exit(1);
+                        }
                     }
                 }
             }
@@ -242,16 +221,6 @@ fn main() {
 
         Some("replay") => {
             let matches = matches.subcommand_matches("replay").unwrap();
-
-            let exchange = matches
-                .value_of("exchange")
-                .expect("expected 'exchange' argument")
-                .to_string();
-            let msg_body = matches.value_of("message-body").map(|s| s.to_string());
-            let routing_key = matches.value_of("routing-key").map(|s| s.to_string());
-
-            let since = matches.value_of("since").map(|s| s.to_string());
-            let until = matches.value_of("until").map(|s| s.to_string());
 
             let target_exchange = matches
                 .value_of("target-exchange")
@@ -261,56 +230,39 @@ fn main() {
                 .value_of("target-routing-key")
                 .map(|s| s.to_string());
 
-            let (time_range, err_ctx) = match try_from::TryFrom::try_from((since, until)) {
-                Ok(time_range) => (Some(time_range), None),
-                Err(TimeRangeError::NoInputSupplied) => (None, None),
-                Err(TimeRangeError::InvalidFormat { supplied }) => (None, Some(supplied)),
-            };
+            let result: Result<MessageQuery, Error> = try_from::TryFrom::try_from(matches);
 
-            if let Some(err_msg) = err_ctx {
-                error!(
-                    "Couldn't parse a time range from suppleid --since/--until values: {}",
-                    err_msg
-                );
-                std::process::exit(1);
-            } else {
-                let mut query = MessageQueryBuilder::with_exchange(exchange);
-                for key in routing_key {
-                    query = query.with_routing_key(key);
+            match result {
+                Err(_) => {
+                    //TODO: display value here
+                    error!("Couldn't parse a time range from supplied --since/--until values");
+                    std::process::exit(1);
                 }
-                for body in msg_body {
-                    query = query.with_body(body);
-                }
-                for time_range in time_range {
-                    query = query.with_time_range(time_range);
-                }
+                Ok(query) => {
+                    let mut rt = Runtime::new().unwrap();
+                    let msg_store = MessageStore::new(es::Config::default());
 
-                let query = query.build();
+                    let result =
+                        rt.block_on(Box::new(msg_store.search(query).and_then(|stored_msgs| {
+                            rmq::publish(
+                                rmq::Config::default(),
+                                target_exchange,
+                                target_routing_key,
+                                stored_msgs,
+                            )
+                        })));
 
-                info!("search query: {:?}", query);
-
-                let mut rt = Runtime::new().unwrap();
-                let msg_store = MessageStore::new(es::Config::default());
-
-                let result =
-                    rt.block_on(Box::new(msg_store.search(query).and_then(|stored_msgs| {
-                        rmq::publish(
-                            rmq::Config::default(),
-                            target_exchange,
-                            target_routing_key,
-                            stored_msgs,
-                        )
-                    })));
-
-                match result {
-                    Err(err) => {
-                        error!("Couldn't replay messages. Error: {:?}", err);
-                        std::process::exit(1);
+                    match result {
+                        Err(err) => {
+                            error!("Couldn't replay messages. Error: {:?}", err);
+                            std::process::exit(1);
+                        }
+                        Ok(_) => info!("done."),
                     }
-                    Ok(_) => info!("done."),
                 }
             }
         }
+
         _ => {
             matches
                 .usage

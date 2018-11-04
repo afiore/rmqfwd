@@ -1,0 +1,20 @@
+langauge: rust
+
+rust:
+  - stable
+
+cache:
+  - cargo:
+
+script:
+  - cargo build --verbose --all
+  - cargo test --verbose -- --test-threads=1
+
+services:
+  - elasticsearch
+
+before_script:
+  - sleep 10 #TODO: poll ES using nc or curl
+
+before_install:
+- curl -O https://download.elastic.co/elasticsearch/release/org/elasticsearch/distribution/deb/elasticsearch/2.3.0/elasticsearch-2.3.0.deb && sudo dpkg -i --force-confnew elasticsearch-2.3.0.deb

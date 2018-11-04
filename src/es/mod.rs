@@ -13,11 +13,14 @@ use serde_json::Value;
 use std::boxed::Box;
 use std::sync::Arc;
 use url::{ParseError, Url};
-use TimeRange;
 
 mod http;
+mod query;
+
 pub type Task = Box<Future<Item = (), Error = Error> + Send>;
 pub type IoFuture<A> = Box<Future<Item = A, Error = Error> + Send>;
+pub type MessageQuery = query::MessageQuery;
+pub type MessageQueryBuilder = query::MessageQueryBuilder;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -56,7 +59,7 @@ pub struct EsResult<A> {
 
 impl Into<Vec<StoredMessage>> for EsResult<TimestampedMessage> {
     fn into(self) -> Vec<StoredMessage> {
-        println!("found {} results", self.hits.total);
+        info!("found {} results", self.hits.total);
         self.hits
             .hits
             .into_iter()
@@ -130,133 +133,10 @@ impl EsEndpoints for Config {
     }
 }
 
-#[derive(Debug)]
-pub struct MessageQuery {
-    pub exchange: String,
-    pub body: Option<String>,
-    pub routing_key: Option<String>,
-    pub time_range: Option<TimeRange>,
-    pub exclude_replayed: bool,
-}
-
-pub struct MessageQueryBuilder {
-    query: MessageQuery,
-}
-
-impl MessageQueryBuilder {
-    pub fn with_exchange(exchange: String) -> Self {
-        MessageQueryBuilder {
-            query: MessageQuery {
-                exchange: exchange,
-                body: None,
-                routing_key: None,
-                time_range: None,
-                exclude_replayed: true,
-            },
-        }
-    }
-
-    pub fn with_routing_key(mut self, key: String) -> Self {
-        self.query.routing_key = Some(key);
-        self
-    }
-
-    pub fn with_time_range(mut self, time_range: TimeRange) -> Self {
-        self.query.time_range = Some(time_range);
-        self
-    }
-
-    pub fn with_body(mut self, body: String) -> Self {
-        self.query.body = Some(body);
-        self
-    }
-
-    pub fn build(self) -> MessageQuery {
-        self.query
-    }
-}
-
-impl Into<Value> for MessageQuery {
-    fn into(self) -> Value {
-        let mut nested: Vec<Value> = Vec::new();
-
-        nested.push(json!(
-            {"match": {"message.exchange": self.exchange }}
-        ));
-
-        for key in self.routing_key {
-            nested.push(json!({
-              "match": {"message.routing_key": key }
-            }));
-        }
-        for body in self.body {
-            nested.push(json!({
-              "match": {"message.body": body }
-            }));
-        }
-
-        let nested_obj = json!({
-            "nested": {
-                "path": "message",
-                "score_mode": "avg",
-                "query": {
-                    "bool": {
-                        "must": nested
-                    }
-                }
-        }});
-
-        let mut filters = vec![
-            nested_obj,
-            json!({
-                "query": {
-                    "match": {
-                        "replayed": !self.exclude_replayed
-                    }
-                }
-            }),
-        ];
-
-        for time_range in self.time_range {
-            let fmt = "%Y-%m-%d %H:%M:%S";
-            let es_fmt = "yyyy-MM-dd HH:mm:ss";
-            let filter = match time_range {
-                TimeRange::Within(start, end) => json!({
-                    "gte": start.format(fmt).to_string(), 
-                    "lte": end.format(fmt).to_string(),
-                    "format": es_fmt
-                }),
-                TimeRange::Since(start) => json!({
-                    "gte": start.format(fmt).to_string(),
-                    "format": es_fmt
-                }),
-                TimeRange::Until(end) => json!({
-                    "lte": end.format(fmt).to_string(),
-                    "format": es_fmt
-                }),
-            };
-
-            filters.push(json!({
-                "range": {
-                    "received_at": filter
-                }
-            }));
-        }
-
-        json!({
-            "query": {
-                 "bool": {
-                     "must": filters
-                 }
-            }
-        })
-    }
-}
-
 pub trait MessageSearchService {
     fn write(&self, rx: Receiver<TimestampedMessage>) -> Task;
     fn init_store(&self) -> Task;
-    fn search(&self, query: MessageQuery) -> IoFuture<Vec<StoredMessage>>;
+    fn search(&self, query: query::MessageQuery) -> IoFuture<Vec<StoredMessage>>;
 
     //NOTE: this might be obsolete
     fn message_for(&self, id: String) -> IoFuture<Option<StoredMessage>>;
@@ -405,7 +285,7 @@ impl MessageSearchService for MessageStore {
 
     fn search(
         &self,
-        query: MessageQuery,
+        query: query::MessageQuery,
     ) -> Box<Future<Item = Vec<StoredMessage>, Error = Error> + Send> {
         let client = Client::new();
         let search_url = self.config.search_url().unwrap();
@@ -440,9 +320,8 @@ pub mod test {
     use lapin::types::AMQPValue;
     use rmq::{Message, Properties};
     use serde_json;
-    use std::thread::sleep;
-    use std::time::Duration;
     use tokio::runtime::Runtime;
+    use TimeRange;
 
     fn reset_store(config: Config) -> IoFuture<MessageStore> {
         let client = Client::new();
@@ -525,15 +404,15 @@ pub mod test {
     }
 
     impl MessageBuilder {
-        pub fn published_on(id: String, exchange: String) -> Self {
+        pub fn published_on(id: &str, exchange: &str) -> Self {
             MessageBuilder {
                 inner: StoredMessage {
-                    id: id.clone(),
+                    id: id.to_owned(),
                     replayed: false,
                     received_at: Utc::now(),
                     message: Message {
                         routing_key: None,
-                        exchange: exchange,
+                        exchange: exchange.to_owned(),
                         redelivered: false,
                         body: format!("message with id: {}", id).to_string(),
                         headers: AMQPValue::Void,
@@ -554,13 +433,13 @@ pub mod test {
             self
         }
 
-        pub fn _received_at(mut self, at: DateTime<Utc>) -> Self {
+        pub fn received_at(mut self, at: DateTime<Utc>) -> Self {
             self.inner.received_at = at;
             self
         }
 
-        pub fn _with_body(mut self, body: String) -> Self {
-            self.inner.message.body = body;
+        pub fn with_body(mut self, body: &str) -> Self {
+            self.inner.message.body = body.to_owned();
             self
         }
 
@@ -574,31 +453,27 @@ pub mod test {
             self
         }
 
-        pub fn with_routing_key(mut self, key: String) -> Self {
-            self.inner.message.routing_key = Some(key);
+        pub fn with_routing_key(mut self, key: &str) -> Self {
+            self.inner.message.routing_key = Some(key.to_owned());
             self
         }
     }
 
-    #[test]
-    fn filter_by_exchange_works() {
+    fn assert_search_result_include(
+        q: MessageQuery,
+        in_store: Vec<StoredMessage>,
+        expected_idx: Vec<usize>,
+    ) {
         let mut rt = Runtime::new().unwrap();
-        let msgs = vec![
-            MessageBuilder::published_on("a".to_owned(), "exchange-2".to_owned()).build(),
-            MessageBuilder::published_on("b".to_owned(), "exchange-1".to_owned()).build(),
-            MessageBuilder::published_on("c".to_owned(), "exchange-1".to_owned()).build(),
-        ];
-
         let mut msgs_expected = Vec::new();
-        for stored_msg in msgs.iter().skip(1) {
-            msgs_expected.push(stored_msg.message.clone());
+        for idx in expected_idx {
+            msgs_expected.push(in_store[idx].message.clone());
         }
 
-        let store = init_test_store(&mut rt, msgs);
-        let query = MessageQueryBuilder::with_exchange("exchange-1".to_owned()).build();
+        let store = init_test_store(&mut rt, in_store);
 
         let mut msgs_found: Vec<Message> = rt
-            .block_on(store.search(query))
+            .block_on(store.search(q))
             .expect("search result expected")
             .into_iter()
             .map(|stored| stored.message)
@@ -610,30 +485,61 @@ pub mod test {
     }
 
     #[test]
-    fn filter_by_exchange_routing_key_works() {
-        let mut rt = Runtime::new().unwrap();
-        let msgs = vec![
-            MessageBuilder::published_on("a".to_owned(), "exchange-2".to_owned()).build(),
-            MessageBuilder::published_on("b".to_owned(), "exchange-1".to_owned())
-                .with_routing_key("test-key".to_string())
-                .build(),
-            MessageBuilder::published_on("c".to_owned(), "exchange-1".to_owned()).build(),
+    fn filter_by_exchange_works() {
+        let in_store = vec![
+            MessageBuilder::published_on("a", "exchange-2").build(),
+            MessageBuilder::published_on("b", "exchange-1").build(),
+            MessageBuilder::published_on("c", "exchange-1").build(),
         ];
 
-        let msgs_expected = vec![msgs[1].message.clone()];
+        let q = MessageQueryBuilder::with_exchange("exchange-1").build();
+        assert_search_result_include(q, in_store, vec![1, 2]);
+    }
 
-        let store = init_test_store(&mut rt, msgs);
-        let query = MessageQueryBuilder::with_exchange("exchange-1".to_owned())
-            .with_routing_key("test-key".to_owned())
+    #[test]
+    fn filter_by_exchange_routing_key_works() {
+        let in_store = vec![
+            MessageBuilder::published_on("a", "exchange-2").build(),
+            MessageBuilder::published_on("b", "exchange-1")
+                .with_routing_key("test-key")
+                .build(),
+            MessageBuilder::published_on("c", "exchange-1").build(),
+        ];
+
+        let q = MessageQueryBuilder::with_exchange("exchange-1")
+            .with_routing_key("test-key")
             .build();
 
-        let msgs_found: Vec<Message> = rt
-            .block_on(store.search(query))
-            .expect("search result expected")
-            .into_iter()
-            .map(|stored| stored.message)
-            .collect();
+        assert_search_result_include(q, in_store, vec![1]);
+    }
 
-        assert_eq!(msgs_expected, msgs_found);
+    #[test]
+    fn filter_by_time_range() {
+        use chrono::Duration;
+        let t1 = Utc::now() - Duration::hours(2);
+        let t2 = Utc::now();
+        let t3 = Utc::now() + Duration::hours(1) + Duration::minutes(5);
+        let t4 = Utc::now() + Duration::days(1);
+
+        let in_store = vec![
+            MessageBuilder::published_on("a", "exchange-1")
+                .received_at(t1)
+                .build(),
+            MessageBuilder::published_on("b", "exchange-1")
+                .received_at(t2)
+                .build(),
+            MessageBuilder::published_on("c", "exchange-1")
+                .received_at(t3)
+                .build(),
+            MessageBuilder::published_on("d", "exchange-1")
+                .received_at(t4)
+                .build(),
+        ];
+
+        let q = MessageQueryBuilder::with_exchange("exchange-1")
+            .with_time_range(TimeRange::Within(t2, t3))
+            .build();
+
+        assert_search_result_include(q, in_store, vec![1, 2]);
     }
 }

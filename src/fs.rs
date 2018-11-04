@@ -115,12 +115,9 @@ mod test {
     use tokio::runtime::Runtime;
 
     fn test_docs() -> Vec<StoredMessage> {
-        let doc1 =
-            MessageBuilder::published_on("a".to_string(), "test-exchange".to_string()).build();
-        let doc2 =
-            MessageBuilder::published_on("b".to_string(), "test-exchange".to_string()).build();
-        let doc3 =
-            MessageBuilder::published_on("c".to_string(), "test-exchange".to_string()).build();
+        let doc1 = MessageBuilder::published_on("a", "test-exchange").build();
+        let doc2 = MessageBuilder::published_on("b", "test-exchange").build();
+        let doc3 = MessageBuilder::published_on("c", "test-exchange").build();
         vec![doc1, doc2, doc3]
     }
 
