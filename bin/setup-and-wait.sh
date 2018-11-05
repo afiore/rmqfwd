@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
-docker-compose up -d 
+docker-compose up -d
 
 attempts=0
-while [ $attempts -lt 10 ]
+while [ $attempts -lt 30 ]
 do
   curl --fail http://localhost:9200/_cluster/health > /dev/null
   if [ $? -eq 0 ]
