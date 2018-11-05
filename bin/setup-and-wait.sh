@@ -9,10 +9,13 @@ do
   if [ $? -eq 0 ]
   then
     echo "Elasticsearch is ready ..."
-    break
+    exit 0
   else
     echo "couldn't connect to elasticsearch. Retrying in one second"
     sleep 1
-    attempts=$[$i+1]
+    ((attempts+=1))
   fi
 done
+
+echo "Couldn't connect to Elasticsearch" 
+exit 1

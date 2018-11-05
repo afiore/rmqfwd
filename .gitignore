@@ -1,3 +1,4 @@
+bin/rabbitmqadmin
 /target
 **/*.rs.bk
 **/*.DS_Store
