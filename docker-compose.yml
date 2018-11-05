@@ -17,5 +17,5 @@ services:
     ports:
          - 5672:5672
          - 15672:15672
-         - 9631:9631       #Habitat supervisor
+#        - 9631:9631 # Habitat supervisor
     hostname: "messaging"
