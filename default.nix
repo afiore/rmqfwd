@@ -1,6 +1,5 @@
 with import <nixpkgs> {};
 
-
 stdenv.mkDerivation {
     name = "rmqfwd";
 
@@ -9,5 +8,8 @@ stdenv.mkDerivation {
       pkgs.python
       pkgs.rustc
       pkgs.cargo
+      pkgs.psmisc
     ];
+
+    RUST_LOG="warn";
 }
