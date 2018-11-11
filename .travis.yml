@@ -8,12 +8,10 @@ cache: cargo
 script:
   - cargo build --verbose --all
   - cargo test --verbose -- --test-threads=1
+  - ./bin/smoketest.sh
 
 services:
   - docker
 
 before_script:
   - ./bin/setup-and-wait.sh
-
-after_success:
-  - ./bin/smoketest.sh

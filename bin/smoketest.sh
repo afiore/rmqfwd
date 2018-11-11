@@ -9,7 +9,6 @@ routing_key=some-key
 n_msgs_sent=$((5 + RANDOM % 8))
 n_exported=$((2 + RANDOM % 5))
 rmqfwd_bin=./target/debug/rmqfwd
-rmqadmin_bin=./bin/rabbitmqadmin
 export_dir=/tmp/rmqfwd_exports
 uuids=()
 
@@ -20,6 +19,7 @@ $rmqfwd_bin trace &
 if [ ! -f $rmq_admin ]
 then
   curl http://localhost:15672/cli/rabbitmqadmin -o $rmq_admin
+  chmod +x $rmq_admin
 fi
 
 $rmq_admin declare exchange name=$exchange type=topic
