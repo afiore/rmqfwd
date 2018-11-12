@@ -142,6 +142,7 @@ pub trait MessageSearchService {
     fn message_for(&self, id: String) -> IoFuture<Option<StoredMessage>>;
 }
 
+#[derive(Clone)]
 pub struct MessageStore {
     config: Arc<Config>,
 }

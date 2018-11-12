@@ -19,6 +19,7 @@ extern crate url;
 
 pub mod es;
 pub mod fs;
+pub mod http;
 pub mod rmq;
 
 use chrono::prelude::*;

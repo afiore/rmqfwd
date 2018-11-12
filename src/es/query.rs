@@ -3,6 +3,7 @@ extern crate try_from;
 use clap::ArgMatches;
 use failure::Error;
 use serde_json::Value;
+use std::collections::HashMap;
 use try_from::TryFrom;
 use TimeRange;
 use TimeRangeError;
@@ -14,42 +15,62 @@ pub struct MessageQuery {
     pub routing_key: Option<String>,
     pub time_range: Option<TimeRange>,
     pub exclude_replayed: bool,
+    //pub page: Option<usize>
+    //pub aggregate_terms: bool
+}
+
+impl TryFrom<HashMap<String, String>> for MessageQuery {
+    type Err = Error;
+
+    fn try_from(h: HashMap<String, String>) -> Result<Self, Error> {
+        if let Some(exchange) = h.get("exchange") {
+            let routing_key = h.get("routing-key").map(|s| s.to_string());
+            let body = h.get("message-body").map(|s| s.to_string());
+            let since = h.get("since").map(|s| s.to_string());
+            let until = h.get("until").map(|s| s.to_string());
+
+            let mut query = MessageQueryBuilder::with_exchange(&exchange);
+
+            for key in routing_key {
+                query = query.with_routing_key(&key);
+            }
+
+            for body in body {
+                query = query.with_body(&body);
+            }
+
+            let time_range_result = try_from::TryFrom::try_from((since, until));
+
+            let time_range = match time_range_result {
+                Ok(time_range) => Some(time_range),
+                Err(TimeRangeError::NoInputSupplied) => None,
+                Err(TimeRangeError::InvalidFormat { supplied }) => {
+                    return Err(format_err!("Couldn't parse a time range from {}", supplied));
+                }
+            };
+
+            for time_range in time_range {
+                query = query.with_time_range(time_range);
+            }
+
+            Ok(query.build())
+        } else {
+            Err(format_err!("Mandatory parameter 'exchange' is missing"))
+        }
+    }
 }
 
 impl<'s, 't> TryFrom<&'s ArgMatches<'t>> for MessageQuery {
     type Err = Error;
     fn try_from(matches: &'s ArgMatches<'t>) -> Result<Self, Error> {
-        let exchange = matches.value_of("exchange").unwrap().to_string();
-        let routing_key = matches.value_of("routing-key").map(|s| s.to_string());
-        let body = matches.value_of("message-body").map(|s| s.to_string());
-        let since = matches.value_of("since").map(|s| s.to_string());
-        let until = matches.value_of("until").map(|s| s.to_string());
-
-        let mut query = MessageQueryBuilder::with_exchange(&exchange);
-
-        for key in routing_key {
-            query = query.with_routing_key(&key);
-        }
-
-        for body in body {
-            query = query.with_body(&body);
-        }
-
-        let time_range_result = try_from::TryFrom::try_from((since, until));
-
-        let time_range = match time_range_result {
-            Ok(time_range) => Some(time_range),
-            Err(TimeRangeError::NoInputSupplied) => None,
-            Err(TimeRangeError::InvalidFormat { supplied }) => {
-                return Err(format_err!("Couldn't parse time range from {}", supplied));
+        let mut h: HashMap<String, String> = HashMap::new();
+        for (k, v) in matches.args.iter() {
+            if v.vals.len() > 0 {
+                //TODO: is there a safer way to convert OsString to String?
+                h.insert(k.to_string(), v.vals[0].clone().into_string().unwrap());
             }
-        };
-
-        for time_range in time_range {
-            query = query.with_time_range(time_range);
         }
-
-        Ok(query.build())
+        TryFrom::try_from(h)
     }
 }
 

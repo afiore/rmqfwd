@@ -1,6 +1,7 @@
 extern crate env_logger;
 extern crate failure;
 extern crate futures;
+extern crate hyper;
 extern crate rmqfwd;
 extern crate tokio;
 extern crate tokio_codec;
@@ -23,6 +24,7 @@ use rmqfwd::rmq;
 use rmqfwd::rmq::{Config, TimestampedMessage};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 
 fn main() {
@@ -45,6 +47,17 @@ fn main() {
                     .takes_value(true)
                     .short("u")
                     .long_help("Include only messages published before the supplied datetime")
+            }
+        }
+        pub mod trace {
+            use clap::Arg;
+
+            pub fn port() -> Arg<'static, 'static> {
+                Arg::with_name("api-port")
+                    .required(false)
+                    .takes_value(true)
+                    .short("p")
+                    .long_help("search API port (defaults to 1337)")
             }
 
         }
@@ -148,7 +161,8 @@ fn main() {
         .subcommand(
             SubCommand
             ::with_name("trace")
-                .about("Bind a queue to 'amq.rabbitmq.trace' and persists received messages into the message store "))
+                .about("Bind a queue to 'amq.rabbitmq.trace' and persists received messages into the message store ")
+                 .args(&[arg::trace::port()]))
         .subcommand(
             SubCommand
             ::with_name("export")
@@ -171,14 +185,32 @@ fn main() {
 
     match matches.subcommand_name() {
         Some("trace") => {
+            use hyper::service::service_fn;
+            use hyper::Server;
+            use rmqfwd::http;
+
+            let matches = matches.subcommand_matches("export").unwrap();
             let (tx, rx) = mpsc::channel::<TimestampedMessage>(5);
             let msg_store = MessageStore::new(es::Config::default());
-
+            let port = value_t!(matches, "api-port", u16).unwrap_or(1337);
             let mut rt = Runtime::new().unwrap();
+
+            //TODO: read port from cli args
+            let addr = ([127, 0, 0, 1], port).into();
+
+            let new_service = move || {
+                let msg_store = Arc::new(Mutex::new(MessageStore::new(es::Config::default())));
+                service_fn(move |req| http::routes(&msg_store, req))
+            };
+
+            let server = Server::bind(&addr)
+                .serve(new_service)
+                .map_err(|e| eprintln!("server error: {}", e));
 
             rt.block_on(msg_store.init_store())
                 .expect("MessageStore.init_index() failed!");
 
+            rt.spawn(server);
             rt.spawn(msg_store.write(rx).map_err(|_| ()));
 
             rt.block_on(rmq::bind_and_consume(Config::default(), tx))
