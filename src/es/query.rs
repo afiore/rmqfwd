@@ -15,8 +15,8 @@ pub struct MessageQuery {
     pub routing_key: Option<String>,
     pub time_range: Option<TimeRange>,
     pub exclude_replayed: bool,
-    //pub page: Option<usize>
-    //pub aggregate_terms: bool
+    pub from: usize,
+    pub aggregate_terms: bool,
 }
 
 impl TryFrom<HashMap<String, String>> for MessageQuery {
@@ -71,6 +71,19 @@ impl<'s, 't> TryFrom<&'s ArgMatches<'t>> for MessageQuery {
             }
         }
         TryFrom::try_from(h)
+    }
+}
+
+fn merge(a: &mut Value, b: &Value) {
+    match (a, b) {
+        (&mut Value::Object(ref mut a), &Value::Object(ref b)) => {
+            for (k, v) in b {
+                merge(a.entry(k.clone()).or_insert(Value::Null), v);
+            }
+        }
+        (a, b) => {
+            *a = b.clone();
+        }
     }
 }
 
@@ -141,13 +154,37 @@ impl Into<Value> for MessageQuery {
             }));
         }
 
-        json!({
+        let mut obj = json!({
+            "from": self.from, 
+            "size": 25,
             "query": {
                  "bool": {
                      "must": filters
                  }
             }
-        })
+        });
+
+        if self.aggregate_terms {
+            merge(
+                &mut obj,
+                &json!({"aggs": {
+                       "message": {
+                          "nested" : {
+                              "path" : "message"
+                          },
+                          "aggs": {
+                          	"exchange": {
+                          		"terms": { "field": "message.exchange" }
+                          	},
+                          	"routing_key": {
+                          		"terms": { "field": "routing_key" }
+                          	}
+                          }
+                       }}}),
+            );
+        }
+
+        obj
     }
 }
 
@@ -164,6 +201,8 @@ impl MessageQueryBuilder {
                 routing_key: None,
                 time_range: None,
                 exclude_replayed: true,
+                from: 1,
+                aggregate_terms: false,
             },
         }
     }
@@ -180,6 +219,16 @@ impl MessageQueryBuilder {
 
     pub fn with_body(mut self, body: &str) -> Self {
         self.query.body = Some(body.to_owned());
+        self
+    }
+
+    pub fn from(mut self, from: usize) -> Self {
+        self.query.from = from;
+        self
+    }
+
+    pub fn aggreating_terms(mut self) -> Self {
+        self.query.aggregate_terms = true;
         self
     }
 

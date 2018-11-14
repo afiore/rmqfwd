@@ -11,6 +11,7 @@ use rmq::{Message, TimestampedMessage};
 use serde_json;
 use serde_json::Value;
 use std::boxed::Box;
+use std::collections::HashMap;
 use std::sync::Arc;
 use url::{ParseError, Url};
 
@@ -53,8 +54,23 @@ pub struct EsHits<A> {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct EsBucket {
+    pub key: String,
+    pub doc_count: usize,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct EsAggregation {
+    pub buckets: Vec<EsBucket>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct EsAggregations(pub HashMap<String, EsAggregation>);
+
+#[derive(Deserialize, Debug)]
 pub struct EsResult<A> {
     pub hits: EsHits<A>,
+    pub aggregations: Option<EsAggregations>,
 }
 
 impl Into<Vec<StoredMessage>> for EsResult<TimestampedMessage> {
