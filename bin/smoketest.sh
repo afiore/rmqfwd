@@ -32,6 +32,14 @@ $rmq_admin declare queue name=$other_queue
 $rmq_admin declare binding source=$exchange destination=$queue routing_key=$routing_key
 $rmq_admin declare binding source=$other_exchange destination=$other_queue routing_key=$routing_key
 
+exit_with_error() {
+  echo -e "\e[31m$1\e[0m"
+  exit 1
+}
+notice() {
+  echo -e "\e[32m$1\e[0m"
+}
+
 echo "about to publish $n_msgs_sent messages in exchange $exchange ..."
 i=0
 while [ $i -lt $n_msgs_sent ]
@@ -49,7 +57,7 @@ i=0
 while [ $i -lt 2 ]
 do
   echo "republishing message with uuid: ${uuids[$i]}"
-  $rmqfwd_bin replay -b ${uuids[$i]} -e "publish.$exchange" $other_exchange $routing_key
+  $rmqfwd_bin replay -b ${uuids[$i]} -e "publish.$exchange" --target-exchange $other_exchange --target-routing-key $routing_key
   sleep 1
   ((i+=1))
 done
@@ -58,8 +66,9 @@ msg_count=$($rmq_admin --format tsv get queue=$other_queue count=10| sed -E 1d |
 expected=2
 if [ "$msg_count" -ne "$expected" ]
 then
-  echo -e "\e[31mExpecting $expected messages to be republished in $other_queue. Found $msg_count instead!\e[0m"
-  exit 1
+  exit_with_error "Expecting $expected messages to be republished in $other_queue. Found $msg_count instead!"
+else
+  notice "replay command ok"
 fi
 
 # 2. export one single message, checking target directory contains expected file
@@ -72,14 +81,14 @@ file_name=$(find $export_dir -name '*.json')
 
 if [ "$file_count" -ne "$expected" ]
 then
-  echo -e "\e[31Expecting $expected file, found $file_count\e[0m"
-  exit 1
+  exit_with_error "Expecting $expected file, found $file_count"
 else
   exported_uuid=$(jq '.message.body | sub("message "; "")' $file_name | sed -E 's/"//g')
   if [ "$exported_uuid" != "${uuids[0]}" ]
   then
-    echo -e "\e[31mExpecting $file_name to contain '${uuids[0]}', found '$exported_uuid' instead.\e[0m"
-    exit 1
+    exit_with_error "Expecting $file_name to contain '${uuids[0]}', found '$exported_uuid' instead."
+  else
+    notice "export command ok"
   fi
 fi
 
@@ -87,8 +96,10 @@ fi
 total_results=$(curl  -XGET 'http://localhost:1337' -d exchange="publish.$exchange" -d message-body=${uuids[0]} | jq '.hits.total')
 if [ "$total_results" != "1" ]
 then
-   echo -e "\e[31mExpecting one single result, found $total_results.\e[0m"
+   exit_with_error "Expecting one single result, found $total_results"
    exit 1
+ else
+   notice "search endpoint ok"
 fi
 
-echo -e "\e[32mSmoketest passed!\e[0m"
+notice "Smoketest passed!"
