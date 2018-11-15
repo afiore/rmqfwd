@@ -1,6 +1,6 @@
 use futures::{future, Future, Stream};
 
-use es::{MessageSearchService, MessageStore};
+use es::{MessageQuery, MessageSearchService, MessageStore};
 use hyper::error::Error;
 use hyper::{header, Body, Method, Request, Response, StatusCode};
 use serde_json;
@@ -41,6 +41,9 @@ pub fn routes(
                         resp
                     }
                     Ok(query) => {
+                        let mut query: MessageQuery = query;
+                        query.aggregate_terms = true;
+
                         let msg_store = msg_store.lock().unwrap();
                         Box::new(msg_store.search(query).then(|results| {
                             match results {

@@ -18,7 +18,7 @@ use futures::prelude::*;
 use futures::sync::mpsc;
 use rmqfwd::es;
 use rmqfwd::es::MessageQuery;
-use rmqfwd::es::{MessageSearchService, MessageStore};
+use rmqfwd::es::{MessageSearchService, MessageStore, StoredMessage};
 use rmqfwd::fs::*;
 use rmqfwd::rmq;
 use rmqfwd::rmq::{Config, TimestampedMessage};
@@ -33,8 +33,36 @@ fn main() {
     pub(crate) mod arg {
         pub mod common {
             use clap::Arg;
+
+            pub fn es_index() -> Arg<'static, 'static> {
+                Arg::with_name("es-index")
+                    .long("es-index")
+                    .required(false)
+                    .takes_value(true)
+                    .long_help(
+                        "Override the Elasticsearch index name (default value: 'rabbit_messages')",
+                    )
+            }
+
+            pub fn es_type() -> Arg<'static, 'static> {
+                Arg::with_name("es-type")
+                    .long("es-type")
+                    .required(false)
+                    .takes_value(true)
+                    .long_help("Override Elasticsearch type (default value: 'message')")
+            }
+
+            pub fn es_base_url() -> Arg<'static, 'static> {
+                Arg::with_name("es-base-url")
+                    .long("es-base-url")
+                    .required(false)
+                    .takes_value(true)
+                    .long_help("Override Elasticsearch host (default value: 'http://localhost:9200')")
+            }
+
             pub fn since() -> Arg<'static, 'static> {
                 Arg::with_name("since")
+                    .long("since")
                     .required(false)
                     .takes_value(true)
                     .short("s")
@@ -43,10 +71,17 @@ fn main() {
 
             pub fn until() -> Arg<'static, 'static> {
                 Arg::with_name("until")
+                    .long("until")
                     .required(false)
                     .takes_value(true)
                     .short("u")
                     .long_help("Include only messages published before the supplied datetime")
+            }
+
+            pub fn with(args: Vec<Arg<'static, 'static>>) -> Vec<Arg<'static, 'static>> {
+                let mut common = vec![es_index(), es_type(), es_base_url()];
+                common.extend(args);
+                common
             }
         }
         pub mod trace {
@@ -69,6 +104,7 @@ fn main() {
                     .required(true)
                     .takes_value(true)
                     .short("e")
+                    .long("exchange")
                     .long_help("Filter by exchange name")
             }
 
@@ -77,6 +113,7 @@ fn main() {
                     .required(false)
                     .takes_value(true)
                     .short("b")
+                    .long("message-body")
                     .long_help("A string keyword to be matched against the message body")
             }
 
@@ -85,11 +122,13 @@ fn main() {
                     .required(false)
                     .takes_value(true)
                     .short("k")
+                    .long("routing-key")
                     .long_help("Filter by routing key")
             }
 
             pub fn target_routing_key() -> Arg<'static, 'static> {
                 Arg::with_name("target-routing-key")
+                    .long("target-routing-key")
                     .required(false)
                     .takes_value(true)
                     .long_help("The routing key to use when replying the messages")
@@ -97,6 +136,7 @@ fn main() {
 
             pub fn target_exchange() -> Arg<'static, 'static> {
                 Arg::with_name("target-exchange")
+                    .long("target-exchange")
                     .required(true)
                     .takes_value(true)
                     .long_help("The exchange where the message will be published")
@@ -110,11 +150,13 @@ fn main() {
                     .required(true)
                     .takes_value(true)
                     .short("e")
+                    .long("exchange")
                     .long_help("The exchange where the message is published")
             }
 
             pub fn msg_body() -> Arg<'static, 'static> {
                 Arg::with_name("message-body")
+                    .long("message-body")
                     .required(false)
                     .takes_value(true)
                     .short("b")
@@ -123,6 +165,7 @@ fn main() {
 
             pub fn routing_key() -> Arg<'static, 'static> {
                 Arg::with_name("routing-key")
+                    .long("routing-key")
                     .required(false)
                     .takes_value(true)
                     .short("k")
@@ -139,6 +182,7 @@ fn main() {
 
             pub fn pretty_print() -> Arg<'static, 'static> {
                 Arg::with_name("pretty-print")
+                    .long("pretty-print")
                     .short("p")
                     .required(false)
                     .takes_value(false)
@@ -147,6 +191,7 @@ fn main() {
 
             pub fn force() -> Arg<'static, 'static> {
                 Arg::with_name("force")
+                    .long("force")
                     .short("f")
                     .required(false)
                     .takes_value(false)
@@ -162,25 +207,25 @@ fn main() {
             SubCommand
             ::with_name("trace")
                 .about("Bind a queue to 'amq.rabbitmq.trace' and persists received messages into the message store ")
-                 .args(&[arg::trace::port()]))
-        .subcommand(
-            SubCommand
-            ::with_name("export")
-                .about("Query the message store and write the result to the file system")
-                .args(&[arg::common::since(), arg::common::until(),
-                        arg::export::exchange(), arg::export::routing_key(), arg::export::msg_body(),
-                        arg::export::target(), arg::export::pretty_print(), arg::export::force()])
-        )
-        .subcommand(
-            SubCommand
-            ::with_name("replay")
-                .about("Publish a subset of the messages in the data store")
-                .args(&[arg::common::since(), arg::common::until(),
-                        arg::replay::exchange(), arg::replay::routing_key(), arg::replay::msg_body(),
-                        arg::replay::target_exchange(), arg::replay::target_routing_key()])
-
-        );
-
+                 .args(arg::common::with(vec![arg::trace::port()]).as_slice()))
+            .subcommand(
+                SubCommand
+                ::with_name("export")
+                    .about("Query the message store and write the result to the file system")
+                    .args(arg::common::with(vec![
+                                            arg::common::since(), arg::common::until(),
+                                            arg::export::exchange(), arg::export::routing_key(), arg::export::msg_body(),
+                                            arg::export::target(), arg::export::pretty_print(), arg::export::force()]).as_slice() ))
+    
+            .subcommand(
+                SubCommand
+                ::with_name("replay") //TODO: rename to republish
+                    .about("Reublish a subset of the messages present in the data store to an arbitrary exchange")
+                    .args(arg::common::with(vec![
+                                            arg::common::since(), arg::common::until(),
+                                            arg::replay::exchange(), arg::replay::routing_key(), arg::replay::msg_body(),
+                                            arg::replay::target_exchange(), arg::replay::target_routing_key()]).as_slice()));
+    
     let matches = app.get_matches();
 
     match matches.subcommand_name() {
@@ -189,9 +234,9 @@ fn main() {
             use hyper::Server;
             use rmqfwd::http;
 
-            let matches = matches.subcommand_matches("export").unwrap();
+            let matches = matches.subcommand_matches("trace").unwrap();
             let (tx, rx) = mpsc::channel::<TimestampedMessage>(5);
-            let msg_store = MessageStore::new(es::Config::default());
+            let msg_store = MessageStore::new(es::Config::from(matches));
             let port = value_t!(matches, "api-port", u16).unwrap_or(1337);
             let mut rt = Runtime::new().unwrap();
 
@@ -223,7 +268,7 @@ fn main() {
             let pretty_print = matches.occurrences_of("pretty-print") > 0;
             let force = matches.occurrences_of("force") > 0;
 
-            let msg_store = MessageStore::new(es::Config::default());
+            let msg_store = MessageStore::new(es::Config::from(matches));
             let exporter = Exporter::new(pretty_print, force);
             let result: Result<MessageQuery, Error> = try_from::TryFrom::try_from(matches);
 
@@ -235,11 +280,9 @@ fn main() {
                 }
                 Ok(query) => {
                     let mut rt = Runtime::new().unwrap();
-                    let result = rt.block_on(
-                        msg_store
-                            .search(query)
-                            .and_then(move |docs| exporter.export_messages(docs, target)),
-                    );
+                    let result = rt.block_on(msg_store.search(query).and_then(move |es_result| {
+                        exporter.export_messages(es_result.into(), target)
+                    }));
                     match result {
                         Ok(_) => info!("export completed."),
                         Err(e) => {
@@ -272,10 +315,11 @@ fn main() {
                 }
                 Ok(query) => {
                     let mut rt = Runtime::new().unwrap();
-                    let msg_store = MessageStore::new(es::Config::default());
+                    let msg_store = MessageStore::new(es::Config::from(matches));
 
                     let result =
-                        rt.block_on(Box::new(msg_store.search(query).and_then(|stored_msgs| {
+                        rt.block_on(Box::new(msg_store.search(query).and_then(|es_result| {
+                            let stored_msgs: Vec<StoredMessage> = es_result.into();
                             rmq::publish(
                                 rmq::Config::default(),
                                 target_exchange,

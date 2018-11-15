@@ -62,7 +62,7 @@ then
   exit 1
 fi
 
-# 2. export one message, checking target directory contains expected file
+# 2. export one single message, checking target directory contains expected file
 
 $rmqfwd_bin export -f -p -e "publish.$exchange" -b ${uuids[0]} $export_dir
 sleep 1
@@ -82,4 +82,13 @@ else
     exit 1
   fi
 fi
+
+# 3. Lookup a message using the search endpoint
+total_results=$(curl  -XGET 'http://localhost:1337' -d exchange="publish.$exchange" -d message-body=${uuids[0]} | jq '.hits.total')
+if [ "$total_results" != "1" ]
+then
+   echo -e "\e[31mExpecting one single result, found $total_results.\e[0m"
+   exit 1
+fi
+
 echo -e "\e[32mSmoketest passed!\e[0m"

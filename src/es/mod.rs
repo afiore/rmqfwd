@@ -1,4 +1,5 @@
 use chrono::prelude::*;
+use clap::ArgMatches;
 use failure::Error;
 use futures::stream;
 use futures::sync::mpsc::Receiver;
@@ -11,7 +12,6 @@ use rmq::{Message, TimestampedMessage};
 use serde_json;
 use serde_json::Value;
 use std::boxed::Box;
-use std::collections::HashMap;
 use std::sync::Arc;
 use url::{ParseError, Url};
 
@@ -41,33 +41,67 @@ impl Default for Config {
     }
 }
 
-#[derive(Deserialize, Debug)]
+impl<'a, 'b> From<&'a ArgMatches<'b>> for Config {
+    fn from(matches: &'a ArgMatches<'b>) -> Config {
+        let default = Config::default();
+        let base_url = matches
+            .value_of("es-base-url")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| default.base_url.clone());
+
+        let index = matches
+            .value_of("es-index")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| default.index.clone());
+
+        let doc_type = matches
+            .value_of("es-type")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| default.doc_type.clone());
+
+        Config {
+            base_url: base_url,
+            index: index,
+            doc_type: doc_type,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 pub struct EsDoc<A> {
     pub _source: A,
     pub _id: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct EsHits<A> {
     pub total: usize,
     pub hits: Vec<EsDoc<A>>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct EsBucket {
     pub key: String,
     pub doc_count: usize,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct EsAggregation {
     pub buckets: Vec<EsBucket>,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct EsAggregations(pub HashMap<String, EsAggregation>);
+#[derive(Serialize, Deserialize, Debug)]
+pub struct EsMessageAgg {
+    pub exchange: EsAggregation,
+    pub routing_key: EsAggregation,
+}
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct EsAggregations {
+    pub message: EsMessageAgg,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 pub struct EsResult<A> {
     pub hits: EsHits<A>,
     pub aggregations: Option<EsAggregations>,
@@ -152,7 +186,7 @@ impl EsEndpoints for Config {
 pub trait MessageSearchService {
     fn write(&self, rx: Receiver<TimestampedMessage>) -> Task;
     fn init_store(&self) -> Task;
-    fn search(&self, query: query::MessageQuery) -> IoFuture<Vec<StoredMessage>>;
+    fn search(&self, query: query::MessageQuery) -> IoFuture<EsResult<TimestampedMessage>>;
 
     //NOTE: this might be obsolete
     fn message_for(&self, id: String) -> IoFuture<Option<StoredMessage>>;
@@ -300,10 +334,7 @@ impl MessageSearchService for MessageStore {
         )
     }
 
-    fn search(
-        &self,
-        query: query::MessageQuery,
-    ) -> Box<Future<Item = Vec<StoredMessage>, Error = Error> + Send> {
+    fn search(&self, query: query::MessageQuery) -> IoFuture<EsResult<TimestampedMessage>> {
         let client = Client::new();
         let search_url = self.config.search_url().unwrap();
         let json_query: Value = query.into();
@@ -320,9 +351,7 @@ impl MessageSearchService for MessageStore {
             .body(body)
             .expect("couldn't build a request!");
 
-        Box::new(
-            http::expect::<EsResult<TimestampedMessage>>(&client, req).map(|es_res| es_res.into()),
-        )
+        Box::new(http::expect::<EsResult<TimestampedMessage>>(&client, req))
     }
 }
 
@@ -489,12 +518,17 @@ pub mod test {
 
         let store = init_test_store(&mut rt, in_store);
 
-        let mut msgs_found: Vec<Message> = rt
-            .block_on(store.search(q))
-            .expect("search result expected")
-            .into_iter()
-            .map(|stored| stored.message)
-            .collect();
+        let mut msgs_found: Vec<Message> = {
+            let es_result = rt
+                .block_on(store.search(q))
+                .expect("search result expected");
+            let stored_msgs: Vec<StoredMessage> = es_result.into();
+
+            stored_msgs
+                .into_iter()
+                .map(|stored| stored.message)
+                .collect()
+        };
 
         msgs_found.sort_by(|a, b| a.body.cmp(&b.body));
         msgs_expected.sort_by(|a, b| a.body.cmp(&b.body));

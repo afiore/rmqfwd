@@ -1,3 +1,4 @@
+//TODO: consider using nightly
 extern crate try_from;
 
 use clap::ArgMatches;
@@ -10,6 +11,7 @@ use TimeRangeError;
 
 #[derive(Debug)]
 pub struct MessageQuery {
+    //Make exchange optional
     pub exchange: String,
     pub body: Option<String>,
     pub routing_key: Option<String>,
@@ -177,7 +179,7 @@ impl Into<Value> for MessageQuery {
                           		"terms": { "field": "message.exchange" }
                           	},
                           	"routing_key": {
-                          		"terms": { "field": "routing_key" }
+                          		"terms": { "field": "message.routing_key" }
                           	}
                           }
                        }}}),
@@ -201,7 +203,7 @@ impl MessageQueryBuilder {
                 routing_key: None,
                 time_range: None,
                 exclude_replayed: true,
-                from: 1,
+                from: 0,
                 aggregate_terms: false,
             },
         }
