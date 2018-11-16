@@ -11,8 +11,7 @@ use TimeRangeError;
 
 #[derive(Debug)]
 pub struct MessageQuery {
-    //Make exchange optional
-    pub exchange: String,
+    pub exchange: Option<String>,
     pub body: Option<String>,
     pub routing_key: Option<String>,
     pub time_range: Option<TimeRange>,
@@ -25,40 +24,40 @@ impl TryFrom<HashMap<String, String>> for MessageQuery {
     type Err = Error;
 
     fn try_from(h: HashMap<String, String>) -> Result<Self, Error> {
-        if let Some(exchange) = h.get("exchange") {
-            let routing_key = h.get("routing-key").map(|s| s.to_string());
-            let body = h.get("message-body").map(|s| s.to_string());
-            let since = h.get("since").map(|s| s.to_string());
-            let until = h.get("until").map(|s| s.to_string());
+        let exchange = h.get("exchange");
+        let routing_key = h.get("routing-key").map(|s| s.to_string());
+        let body = h.get("message-body").map(|s| s.to_string());
+        let since = h.get("since").map(|s| s.to_string());
+        let until = h.get("until").map(|s| s.to_string());
 
-            let mut query = MessageQueryBuilder::with_exchange(&exchange);
+        let mut query = MessageQueryBuilder::default();
 
-            for key in routing_key {
-                query = query.with_routing_key(&key);
-            }
-
-            for body in body {
-                query = query.with_body(&body);
-            }
-
-            let time_range_result = try_from::TryFrom::try_from((since, until));
-
-            let time_range = match time_range_result {
-                Ok(time_range) => Some(time_range),
-                Err(TimeRangeError::NoInputSupplied) => None,
-                Err(TimeRangeError::InvalidFormat { supplied }) => {
-                    return Err(format_err!("Couldn't parse a time range from {}", supplied));
-                }
-            };
-
-            for time_range in time_range {
-                query = query.with_time_range(time_range);
-            }
-
-            Ok(query.build())
-        } else {
-            Err(format_err!("Mandatory parameter 'exchange' is missing"))
+        for exch in exchange {
+            query = query.with_exchange(&exch);
         }
+
+        for key in routing_key {
+            query = query.with_routing_key(&key);
+        }
+
+        for body in body {
+            query = query.with_body(&body);
+        }
+
+        let time_range_result = try_from::TryFrom::try_from((since, until));
+
+        let time_range = match time_range_result {
+            Ok(time_range) => Some(time_range),
+            Err(TimeRangeError::NoInputSupplied) => None,
+            Err(TimeRangeError::InvalidFormat { supplied }) => {
+                return Err(format_err!("Couldn't parse a time range from {}", supplied));
+            }
+        };
+
+        for time_range in time_range {
+            query = query.with_time_range(time_range);
+        }
+        Ok(query.build())
     }
 }
 
@@ -93,9 +92,11 @@ impl Into<Value> for MessageQuery {
     fn into(self) -> Value {
         let mut nested: Vec<Value> = Vec::new();
 
-        nested.push(json!(
-            {"match": {"message.exchange": self.exchange }}
-        ));
+        for exchange in self.exchange {
+            nested.push(json!(
+              {"match": {"message.exchange": exchange }}
+            ));
+        }
 
         for key in self.routing_key {
             nested.push(json!({
@@ -194,11 +195,11 @@ pub struct MessageQueryBuilder {
     query: MessageQuery,
 }
 
-impl MessageQueryBuilder {
-    pub fn with_exchange(exchange: &str) -> Self {
+impl Default for MessageQueryBuilder {
+    fn default() -> Self {
         MessageQueryBuilder {
             query: MessageQuery {
-                exchange: exchange.to_owned(),
+                exchange: None,
                 body: None,
                 routing_key: None,
                 time_range: None,
@@ -207,6 +208,13 @@ impl MessageQueryBuilder {
                 aggregate_terms: false,
             },
         }
+    }
+}
+
+impl MessageQueryBuilder {
+    pub fn with_exchange(mut self, exchange: &str) -> Self {
+        self.query.exchange = Some(exchange.to_owned());
+        self
     }
 
     pub fn with_routing_key(mut self, key: &str) -> Self {

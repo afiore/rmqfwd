@@ -1,4 +1,4 @@
-use futures::{future, Future, Stream};
+use futures::{future, Future};
 
 use es::{MessageQuery, MessageSearchService, MessageStore};
 use hyper::error::Error;
@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::marker::Send;
 use std::sync::{Arc, Mutex};
 use try_from::TryFrom;
-use url::form_urlencoded;
+use url::Url;
 
 type FutureResponse = Box<Future<Item = Response<Body>, Error = Error> + Send>;
 
@@ -16,39 +16,45 @@ pub fn routes(
     msg_store: &Arc<Mutex<MessageStore>>,
     req: Request<Body>,
 ) -> Box<Future<Item = Response<Body>, Error = Error> + Send> {
+    let uri = Url::parse(&(format!("http://somehost{}", req.uri().to_string())))
+        .expect("couldn't parse request url!");
+
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") => {
             let msg_store = msg_store.clone();
-            Box::new(req.into_body().concat2().and_then(move |b| {
-                let params = form_urlencoded::parse(b.as_ref())
-                    .into_owned()
-                    .collect::<HashMap<String, String>>();
+            let mut params = HashMap::new();
+            let query_pairs = uri.query_pairs();
 
-                match TryFrom::try_from(params) {
-                    Err(e) => {
-                        let response_body =
-                            json!({"status": 400, "description": format!("bad request: {}", e)})
-                                .to_string();
+            for (k, v) in query_pairs {
+                params.insert(k.to_owned().to_string(), v.to_owned().to_string());
+            }
 
-                        let resp: FutureResponse = Box::new(future::ok(
-                            Response::builder()
-                                .status(StatusCode::BAD_REQUEST)
-                                .header(header::CONTENT_TYPE, "application/json")
-                                .header(header::CONTENT_LENGTH, response_body.len() as u64)
-                                .body(Body::from(response_body))
-                                .unwrap(),
-                        ));
-                        resp
-                    }
-                    Ok(query) => {
-                        let mut query: MessageQuery = query;
-                        query.aggregate_terms = true;
+            match TryFrom::try_from(params) {
+                Err(e) => {
+                    let response_body =
+                        json!({"status": 400, "description": format!("bad request: {}", e)})
+                            .to_string();
 
-                        let msg_store = msg_store.lock().unwrap();
-                        Box::new(msg_store.search(query).then(|results| {
+                    let resp: FutureResponse = Box::new(future::ok(
+                        Response::builder()
+                            .status(StatusCode::BAD_REQUEST)
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .header(header::CONTENT_LENGTH, response_body.len() as u64)
+                            .body(Body::from(response_body))
+                            .unwrap(),
+                    ));
+                    resp
+                }
+                Ok(query) => {
+                    let mut query: MessageQuery = query;
+                    query.aggregate_terms = true;
+
+                    let msg_store = msg_store.lock().unwrap();
+                    Box::new(msg_store.search(query).then(|results| {
                             match results {
                                 Ok(docs) => Ok(Response::builder()
                                     .header(header::CONTENT_TYPE, "application/json")
+                                    .header("Access-Control-Allow-Origin", "*") 
                                     .body(Body::from(serde_json::to_string(&docs).unwrap()))
                                     .unwrap()),
                                 Err(e) => {
@@ -65,9 +71,8 @@ pub fn routes(
                                 }
                             }
                         }))
-                    }
                 }
-            }))
+            }
         }
 
         _ => Box::new(future::ok(

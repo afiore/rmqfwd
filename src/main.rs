@@ -236,15 +236,17 @@ fn main() {
 
             let matches = matches.subcommand_matches("trace").unwrap();
             let (tx, rx) = mpsc::channel::<TimestampedMessage>(5);
+            //TODO: use only one arc/mutex
             let msg_store = MessageStore::new(es::Config::from(matches));
+            let msg_store2 = Arc::new(Mutex::new(msg_store.clone()));
+
             let port = value_t!(matches, "api-port", u16).unwrap_or(1337);
             let mut rt = Runtime::new().unwrap();
 
-            //TODO: read port from cli args
             let addr = ([127, 0, 0, 1], port).into();
 
             let new_service = move || {
-                let msg_store = Arc::new(Mutex::new(MessageStore::new(es::Config::default())));
+                let msg_store = msg_store2.clone();
                 service_fn(move |req| http::routes(&msg_store, req))
             };
 

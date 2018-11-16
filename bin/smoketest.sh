@@ -10,11 +10,14 @@ n_msgs_sent=$((5 + RANDOM % 8))
 n_exported=$((2 + RANDOM % 5))
 rmqfwd_bin=./target/debug/rmqfwd
 export_dir=/tmp/rmqfwd_exports
+es_index=rabbit_messages
+es_type=message
+rmqfwd_common_ops="--es-index $es_index --es-type $es_type"
 uuids=()
 
 trap "killall rmqfwd" EXIT 
 trap "killall rmqfwd" INT 
-$rmqfwd_bin trace &
+RUST_LOG='rmqfwd=debug' $rmqfwd_bin trace $rmqfwd_common_ops &
 
 if [ ! -f $rmq_admin ]
 then
@@ -57,7 +60,7 @@ i=0
 while [ $i -lt 2 ]
 do
   echo "republishing message with uuid: ${uuids[$i]}"
-  $rmqfwd_bin replay -b ${uuids[$i]} -e "publish.$exchange" --target-exchange $other_exchange --target-routing-key $routing_key
+  $rmqfwd_bin replay $rmqfwd_common_ops -b ${uuids[$i]} -e "publish.$exchange" --target-exchange $other_exchange --target-routing-key $routing_key
   sleep 1
   ((i+=1))
 done
@@ -73,7 +76,7 @@ fi
 
 # 2. export one single message, checking target directory contains expected file
 
-$rmqfwd_bin export -f -p -e "publish.$exchange" -b ${uuids[0]} $export_dir
+$rmqfwd_bin export $rmqfwd_common_ops -f -p -e "publish.$exchange" -b ${uuids[0]} $export_dir
 sleep 1
 expected=1
 file_count=$(find $export_dir -name '*.json' | wc -l)
@@ -93,7 +96,7 @@ else
 fi
 
 # 3. Lookup a message using the search endpoint
-total_results=$(curl  -XGET 'http://localhost:1337' -d exchange="publish.$exchange" -d message-body=${uuids[0]} | jq '.hits.total')
+total_results=$(curl "http://localhost:1337?exchange=publish.$exchange&message-body=${uuids[0]}" | jq '.hits.total')
 if [ "$total_results" != "1" ]
 then
    exit_with_error "Expecting one single result, found $total_results"

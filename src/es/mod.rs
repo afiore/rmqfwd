@@ -543,7 +543,9 @@ pub mod test {
             MessageBuilder::published_on("c", "exchange-1").build(),
         ];
 
-        let q = MessageQueryBuilder::with_exchange("exchange-1").build();
+        let q = MessageQueryBuilder::default()
+            .with_exchange("exchange-1")
+            .build();
         assert_search_result_include(q, in_store, vec![1, 2]);
     }
 
@@ -557,7 +559,8 @@ pub mod test {
             MessageBuilder::published_on("c", "exchange-1").build(),
         ];
 
-        let q = MessageQueryBuilder::with_exchange("exchange-1")
+        let q = MessageQueryBuilder::default()
+            .with_exchange("exchange-1")
             .with_routing_key("test-key")
             .build();
 
@@ -587,7 +590,8 @@ pub mod test {
                 .build(),
         ];
 
-        let q = MessageQueryBuilder::with_exchange("exchange-1")
+        let q = MessageQueryBuilder::default()
+            .with_exchange("exchange-1")
             .with_time_range(TimeRange::Within(t2, t3))
             .build();
 
