@@ -123,11 +123,9 @@ impl Into<Value> for MessageQuery {
         let mut filters = vec![
             nested_obj,
             json!({
-                "query": {
-                    "match": {
-                        "replayed": !self.exclude_replayed
-                    }
-                }
+                "match": {
+                     "replayed": !self.exclude_replayed
+                 }
             }),
         ];
 
@@ -186,6 +184,8 @@ impl Into<Value> for MessageQuery {
                        }}}),
             );
         }
+
+        info!("returning query: {}", obj);
 
         obj
     }

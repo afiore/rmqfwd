@@ -243,6 +243,7 @@ fn main() {
             let port = value_t!(matches, "api-port", u16).unwrap_or(1337);
             let mut rt = Runtime::new().unwrap();
 
+            //TODO read value from es-base url param
             let addr = ([127, 0, 0, 1], port).into();
 
             let new_service = move || {

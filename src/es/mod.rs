@@ -4,10 +4,7 @@ use failure::Error;
 use futures::stream;
 use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
-use hyper::Body;
-use hyper::Client;
-use hyper::Method;
-use hyper::Request;
+use hyper::{header, Body, Client, Method, Request};
 use rmq::{Message, TimestampedMessage};
 use serde_json;
 use serde_json::Value;
@@ -209,40 +206,38 @@ impl MessageStore {
         let mappings_url = self.config.mapping_url().unwrap();
 
         let req = Request::builder()
-            .method(Method::POST)
+            .method(Method::PUT)
+            .header(header::CONTENT_TYPE, "application/json")
             .uri(index_url.to_string())
             .body(Body::empty())
             .expect("couldn't build a request!");
 
+        //TODO: this should use a different query in IE6
+        // - replace 'string' type with 'text'
+        // - use 'nested' in header type ?
         Box::new(http::expect_ok(&client, req).and_then(move |_| {
             let mappings: serde_json::Value = json!({
                 "properties": {
                     "replayed": {
-                        "type": "boolean",
-                        "index": "not_analyzed"
+                        "type": "boolean"
                     },
                     "received_at": {
-                        "type": "date",
-                        "index": "not_analyzed"
+                        "type": "date"
                     },
                     "message": {
                         "type": "nested",
                         "properties": {
                             "exchange": {
-                                "type": "string",
-                                "index": "not_analyzed"
+                                "type": "keyword"
                             },
                             "routing_key": {
-                                "type": "string",
-                                "index": "not_analyzed"
+                                "type": "keyword"
                             },
                             "redelivered": {
-                                "type": "boolean",
-                                "index": "not_analyzed"
+                                "type": "boolean"
                             },
                             "uuid": {
-                                "type": "string",
-                                "index": "not_analyzed"
+                                "type": "keyword"
                             },
                             "headers": {
                                 "type": "object",
@@ -255,6 +250,7 @@ impl MessageStore {
 
             let req = Request::builder()
                 .method(Method::PUT)
+                .header(header::CONTENT_TYPE, "application/json")
                 .uri(mappings_url.to_string())
                 .body(Body::wrap_stream(stream::once(serde_json::to_string(
                     &mappings,
@@ -282,6 +278,7 @@ impl MessageSearchService for MessageStore {
 
         let req = Request::builder()
             .method(Method::HEAD)
+            .header(header::CONTENT_TYPE, "application/json")
             .uri(index_url.to_string())
             .body(Body::empty())
             .expect("couldn't build a request!");
@@ -310,6 +307,7 @@ impl MessageSearchService for MessageStore {
                     let mut req = Request::builder();
 
                     req.method(Method::POST).uri(ep_url.clone());
+                    req.header(header::CONTENT_TYPE, "application/json");
                     http::expect_ok(
                         &client,
                         req.body(body)
@@ -347,6 +345,7 @@ impl MessageSearchService for MessageStore {
         let body = Body::wrap_stream(stream::once(serde_json::to_string(&json_query)));
         let req = Request::builder()
             .method(Method::POST)
+            .header(header::CONTENT_TYPE, "application/json")
             .uri(search_url.to_string())
             .body(body)
             .expect("couldn't build a request!");
@@ -376,6 +375,7 @@ pub mod test {
 
         let head_req = Request::builder()
             .method(Method::HEAD)
+            .header(header::CONTENT_TYPE, "application/json")
             .uri(index_url.to_string())
             .body(Body::empty())
             .expect("couldn't build a request!");
@@ -385,6 +385,7 @@ pub mod test {
                 let delete_req = Request::builder()
                     .uri(index_url)
                     .method(Method::DELETE)
+                    .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::empty())
                     .expect("couldn't build DELETE request");
 
@@ -412,6 +413,7 @@ pub mod test {
                 let msg_json = Body::wrap_stream(stream::once(serde_json::to_string_pretty(&msg)));
                 let req = Request::builder()
                     .uri(msg_url.to_string())
+                    .header(header::CONTENT_TYPE, "application/json")
                     .method(Method::PUT)
                     .body(msg_json)
                     .expect("couldn't build a request!");
@@ -422,6 +424,7 @@ pub mod test {
                 let req = Request::builder()
                     .uri(flush_url.to_string())
                     .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::empty())
                     .expect("couldn't build a request!");
 
