@@ -26,6 +26,7 @@ pub struct Config {
     base_url: String,
     index: String,
     doc_type: String,
+    es_major_version: Option<u8>,
 }
 
 impl Default for Config {
@@ -34,33 +35,36 @@ impl Default for Config {
             base_url: "http://localhost:9200".to_string(),
             index: "rabbit_messages".to_string(),
             doc_type: "message".to_string(),
+            es_major_version: None,
         }
     }
 }
 
 impl<'a, 'b> From<&'a ArgMatches<'b>> for Config {
     fn from(matches: &'a ArgMatches<'b>) -> Config {
-        let default = Config::default();
-        let base_url = matches
-            .value_of("es-base-url")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| default.base_url.clone());
+        let mut config = Config::default();
 
-        let index = matches
-            .value_of("es-index")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| default.index.clone());
-
-        let doc_type = matches
-            .value_of("es-type")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| default.doc_type.clone());
-
-        Config {
-            base_url: base_url,
-            index: index,
-            doc_type: doc_type,
+        if let Some(base_url) = matches.value_of("es-base-url") {
+            config.base_url = base_url.to_string();
         }
+
+        if let Some(index) = matches.value_of("es-index") {
+            config.index = index.to_string();
+        }
+
+        if let Some(doc_type) = matches.value_of("es-type") {
+            config.doc_type = doc_type.to_string();
+        }
+
+        if let Some(es_major_version) = matches.value_of("es-major-version") {
+            config.es_major_version = Some(
+                es_major_version
+                    .parse::<u8>()
+                    .expect("es-major-version: positive integer expected!"),
+            );
+        }
+
+        config
     }
 }
 

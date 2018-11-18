@@ -60,6 +60,15 @@ fn main() {
                     .long_help("Override Elasticsearch host (default value: 'http://localhost:9200')")
             }
 
+            pub fn es_major_version() -> Arg<'static, 'static> {
+                Arg::with_name("es-major-version")
+                    .long("es-base-url")
+                    .required(false)
+                    .takes_value(true)
+                    .long_help("Explicitly the expected Elastic Search API version major number (default value: autodetected)")
+            }
+
+
             pub fn since() -> Arg<'static, 'static> {
                 Arg::with_name("since")
                     .long("since")
@@ -79,7 +88,7 @@ fn main() {
             }
 
             pub fn with(args: Vec<Arg<'static, 'static>>) -> Vec<Arg<'static, 'static>> {
-                let mut common = vec![es_index(), es_type(), es_base_url()];
+                let mut common = vec![es_index(), es_type(), es_base_url(), es_major_version()];
                 common.extend(args);
                 common
             }
