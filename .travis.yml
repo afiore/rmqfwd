@@ -10,6 +10,13 @@ script:
   - cargo test --verbose -- --test-threads=1
   - ./bin/smoketest.sh
 
+matrix:
+  include:
+    - name: "With Elasticsearch 6xx"
+      env: ES_IMAGE=elasticsearch:2.4.6
+    - name: "With Elasticsearch 2xx"
+      env: ES_IMAGE=docker.elastic.co/elasticsearch/elasticsearch:6.5.0
+
 services:
   - docker
 

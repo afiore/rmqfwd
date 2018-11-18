@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+echo "ES_IMAGE=$ES_IMAGE" > .env
+
 docker-compose up -d
 
 wait_for () {

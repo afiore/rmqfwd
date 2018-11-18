@@ -10,8 +10,9 @@ n_msgs_sent=$((5 + RANDOM % 8))
 n_exported=$((2 + RANDOM % 5))
 rmqfwd_bin=./target/debug/rmqfwd
 export_dir=/tmp/rmqfwd_exports
-es_index=rabbit_messages
+es_index=smoketest
 es_type=message
+rmqfwd_timerange_ops="--since 2010-07-08T09:10:11.012Z --until 2030-07-08T09:10:11.012Z"
 rmqfwd_common_ops="--es-index $es_index --es-type $es_type"
 uuids=()
 
@@ -76,7 +77,7 @@ fi
 
 # 2. export one single message, checking target directory contains expected file
 
-$rmqfwd_bin export $rmqfwd_common_ops -f -p -e "publish.$exchange" -b ${uuids[0]} $export_dir
+$rmqfwd_bin export $rmqfwd_common_ops -f -p -e "publish.$exchange" -b ${uuids[0]} $rmqfwd_timerange_ops  $export_dir
 sleep 1
 expected=1
 file_count=$(find $export_dir -name '*.json' | wc -l)

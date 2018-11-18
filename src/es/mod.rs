@@ -7,7 +7,6 @@ use futures::{Future, Stream};
 use hyper::{header, Body, Client, Method, Request};
 use rmq::{Message, TimestampedMessage};
 use serde_json;
-use serde_json::Value;
 use std::boxed::Box;
 use std::sync::Arc;
 use url::{ParseError, Url};
@@ -72,6 +71,16 @@ impl<'a, 'b> From<&'a ArgMatches<'b>> for Config {
 pub struct EsDoc<A> {
     pub _source: A,
     pub _id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct EsCluster {
+    pub version: EsVersion,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct EsVersion {
+    pub number: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -141,7 +150,9 @@ impl Into<TimestampedMessage> for StoredMessage {
     }
 }
 
+//TODO: simply return Url, handlying error internally
 trait EsEndpoints {
+    fn root_url(&self) -> Result<Url, ParseError>;
     fn message_url(&self, id: Option<String>) -> Result<Url, ParseError>;
     fn index_url(&self) -> Result<Url, ParseError>;
     fn mapping_url(&self) -> Result<Url, ParseError>;
@@ -150,6 +161,10 @@ trait EsEndpoints {
 }
 
 impl EsEndpoints for Config {
+    fn root_url(&self) -> Result<Url, ParseError> {
+        Url::parse(&self.base_url)
+    }
+
     fn message_url(&self, id: Option<String>) -> Result<Url, ParseError> {
         let without_id = self
             .index_url()
@@ -162,7 +177,8 @@ impl EsEndpoints for Config {
     }
 
     fn index_url(&self) -> Result<Url, ParseError> {
-        Url::parse(&self.base_url).and_then(|u| u.join(&format!("{}/", &self.index)))
+        self.root_url()
+            .and_then(|u| u.join(&format!("{}/", &self.index)))
     }
 
     fn flush_url(&self) -> Result<Url, ParseError> {
@@ -199,6 +215,34 @@ pub struct MessageStore {
 }
 
 impl MessageStore {
+    pub fn detecting_es_version(mut config: Config) -> IoFuture<Self> {
+        let client = Client::new();
+        let root_url = config.root_url().unwrap();
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .header(header::CONTENT_TYPE, "application/json")
+            .uri(root_url.to_string())
+            .body(Body::empty())
+            .expect("couldn't build a request!");
+
+        Box::new(http::expect::<EsCluster>(&client, req).map(move |cluster| {
+            let version_number = cluster.version.number;
+            let major_min_bugfix = version_number.split('.');
+            match major_min_bugfix.into_iter().next().map(|s| s.parse::<u8>().expect("expected es-major-version to be an integer")) {
+                Some(n) if n == 2 || n == 6 => {
+                    debug!("Supported Elasticsearch major version detected: {}", n);
+                    config.es_major_version = Some(n);
+                }
+                _ => {
+                    warn!("Unsupported Elasticsearch version detected. Supported versions are 2xx and 6xx. This is likely to fail!");
+                }
+            };
+
+            MessageStore::new(config)
+        }))
+    }
+
     pub fn new(config: Config) -> Self {
         MessageStore {
             config: Arc::new(config),
@@ -208,6 +252,26 @@ impl MessageStore {
         let client = Client::new();
         let index_url = self.config.index_url().unwrap();
         let mappings_url = self.config.mapping_url().unwrap();
+        let config = self.config.clone();
+
+        let es_field = move |field_type: &str| {
+            if config.es_major_version == Some(2 as u8) {
+                json!({
+                   "type": field_type,
+                   "index": "not_analyzed",
+               })
+            } else {
+                let field_type = if field_type == "string" {
+                    "keyword"
+                } else {
+                    field_type
+                };
+
+                json!({
+                   "type": field_type,
+               })
+            }
+        };
 
         let req = Request::builder()
             .method(Method::PUT)
@@ -222,27 +286,15 @@ impl MessageStore {
         Box::new(http::expect_ok(&client, req).and_then(move |_| {
             let mappings: serde_json::Value = json!({
                 "properties": {
-                    "replayed": {
-                        "type": "boolean"
-                    },
-                    "received_at": {
-                        "type": "date"
-                    },
+                    "replayed": es_field("boolean"),
+                    "received_at": es_field("date"),
                     "message": {
                         "type": "nested",
                         "properties": {
-                            "exchange": {
-                                "type": "keyword"
-                            },
-                            "routing_key": {
-                                "type": "keyword"
-                            },
-                            "redelivered": {
-                                "type": "boolean"
-                            },
-                            "uuid": {
-                                "type": "keyword"
-                            },
+                            "exchange": es_field("string"),
+                            "routing_key": es_field("string"),
+                            "redelivered": es_field("boolean"),
+                            "uuid": es_field("string"),
                             "headers": {
                                 "type": "object",
                                 "enabled": "false"
@@ -339,7 +391,7 @@ impl MessageSearchService for MessageStore {
     fn search(&self, query: query::MessageQuery) -> IoFuture<EsResult<TimestampedMessage>> {
         let client = Client::new();
         let search_url = self.config.search_url().unwrap();
-        let json_query: Value = query.into();
+        let json_query = query.as_json(self.config.es_major_version);
         info!(
             "sending ES query: {} to {:?}",
             serde_json::to_string_pretty(&json_query).unwrap(),
