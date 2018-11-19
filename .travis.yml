@@ -6,8 +6,8 @@ rust:
 cache: cargo
 
 script:
-  - cargo build --verbose --all
-  - cargo test --verbose -- --test-threads=1
+  - cargo build --all
+  - cargo test -- --test-threads=1
   - ./bin/smoketest.sh
 
 matrix:

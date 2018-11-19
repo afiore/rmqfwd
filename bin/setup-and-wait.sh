@@ -17,7 +17,7 @@ wait_for () {
     auth="-u $3"
   fi
 
-  while [ $attempts -lt 30 ]
+  while [ $attempts -lt 120 ]
   do
     curl --silent $auth $service_uri > /dev/null
     if [ $? -eq 0 ]

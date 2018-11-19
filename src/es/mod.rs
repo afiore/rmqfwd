@@ -280,9 +280,6 @@ impl MessageStore {
             .body(Body::empty())
             .expect("couldn't build a request!");
 
-        //TODO: this should use a different query in IE6
-        // - replace 'string' type with 'text'
-        // - use 'nested' in header type ?
         Box::new(http::expect_ok(&client, req).and_then(move |_| {
             let mappings: serde_json::Value = json!({
                 "properties": {
@@ -292,6 +289,7 @@ impl MessageStore {
                         "type": "nested",
                         "properties": {
                             "exchange": es_field("string"),
+                            "body": es_field("string"),
                             "routing_key": es_field("string"),
                             "redelivered": es_field("boolean"),
                             "uuid": es_field("string"),
@@ -333,7 +331,7 @@ impl MessageSearchService for MessageStore {
         let index_url = self.config.index_url().unwrap();
 
         let req = Request::builder()
-            .method(Method::HEAD)
+            .method(Method::GET)
             .header(header::CONTENT_TYPE, "application/json")
             .uri(index_url.to_string())
             .body(Body::empty())
@@ -426,7 +424,6 @@ pub mod test {
 
     fn reset_store(config: Config) -> IoFuture<MessageStore> {
         let client = Client::new();
-        let store = MessageStore::new(config.clone());
         let index_url = config.index_url().unwrap().to_string();
 
         let head_req = Request::builder()
@@ -445,13 +442,17 @@ pub mod test {
                     .body(Body::empty())
                     .expect("couldn't build DELETE request");
 
-                debug!("deleting store ...");
+                println!("deleting store ...");
                 http::expect_ok(&client, delete_req)
             } else {
                 Box::new(future::lazy(|| Ok(())))
             };
 
-            Box::new(clean.and_then(move |_| store.init_store().map(move |_| store)))
+            Box::new(
+                clean
+                    .and_then(move |_| MessageStore::detecting_es_version(config.clone()))
+                    .and_then(|store| store.init_store().map(move |_| store)),
+            )
         }))
     }
 
@@ -489,7 +490,6 @@ pub mod test {
         }))
     }
 
-    //TODO: borrow messages
     fn init_test_store(rt: &mut Runtime, msgs: Vec<StoredMessage>) -> MessageStore {
         let config = Config {
             index: "rabbit_messages_test".to_string(),
@@ -596,6 +596,7 @@ pub mod test {
 
     #[test]
     fn filter_by_exchange_works() {
+        env_logger::init();
         let in_store = vec![
             MessageBuilder::published_on("a", "exchange-2").build(),
             MessageBuilder::published_on("b", "exchange-1").build(),
