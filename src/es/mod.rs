@@ -442,7 +442,6 @@ pub mod test {
                     .body(Body::empty())
                     .expect("couldn't build DELETE request");
 
-                println!("deleting store ...");
                 http::expect_ok(&client, delete_req)
             } else {
                 Box::new(future::lazy(|| Ok(())))

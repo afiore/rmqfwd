@@ -32,8 +32,8 @@ impl TryFrom<HashMap<String, String>> for MessageQuery {
 
         let mut query = MessageQueryBuilder::default();
 
-        for exch in exchange {
-            query = query.with_exchange(&exch);
+        for each in exchange {
+            query = query.with_exchange(&each);
         }
 
         for key in routing_key {
