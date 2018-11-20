@@ -32,8 +32,8 @@ impl TryFrom<HashMap<String, String>> for MessageQuery {
 
         let mut query = MessageQueryBuilder::default();
 
-        for exch in exchange {
-            query = query.with_exchange(&exch);
+        for each in exchange {
+            query = query.with_exchange(&each);
         }
 
         for key in routing_key {
@@ -88,22 +88,22 @@ fn merge(a: &mut Value, b: &Value) {
     }
 }
 
-impl Into<Value> for MessageQuery {
-    fn into(self) -> Value {
+impl MessageQuery {
+    pub fn as_json(&self, es_major_version: Option<u8>) -> Value {
         let mut nested: Vec<Value> = Vec::new();
 
-        for exchange in self.exchange {
+        for exchange in &self.exchange {
             nested.push(json!(
               {"match": {"message.exchange": exchange }}
             ));
         }
 
-        for key in self.routing_key {
+        for key in &self.routing_key {
             nested.push(json!({
               "match": {"message.routing_key": key }
             }));
         }
-        for body in self.body {
+        for body in &self.body {
             nested.push(json!({
               "match": {"message.body": body }
             }));
@@ -120,18 +120,24 @@ impl Into<Value> for MessageQuery {
                 }
         }});
 
+        let wrap_if_es2 = move |json: Value| {
+            if Some(2) == es_major_version {
+                json!({ "query": json })
+            } else {
+                json
+            }
+        };
+
         let mut filters = vec![
             nested_obj,
-            json!({
-                "query": {
-                    "match": {
-                        "replayed": !self.exclude_replayed
-                    }
-                }
-            }),
+            wrap_if_es2(json!({
+                "match": {
+                     "replayed": !self.exclude_replayed
+                 }
+            })),
         ];
 
-        for time_range in self.time_range {
+        for time_range in &self.time_range {
             let fmt = "%Y-%m-%d %H:%M:%S";
             let es_fmt = "yyyy-MM-dd HH:mm:ss";
             let filter = match time_range {
@@ -186,6 +192,8 @@ impl Into<Value> for MessageQuery {
                        }}}),
             );
         }
+
+        info!("returning query: {}", obj);
 
         obj
     }

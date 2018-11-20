@@ -60,6 +60,15 @@ fn main() {
                     .long_help("Override Elasticsearch host (default value: 'http://localhost:9200')")
             }
 
+            pub fn es_major_version() -> Arg<'static, 'static> {
+                Arg::with_name("es-major-version")
+                    .long("es-major-version")
+                    .required(false)
+                    .takes_value(true)
+                    .long_help("Explicitly the expected Elastic Search API version major number (default value: autodetected)")
+            }
+
+
             pub fn since() -> Arg<'static, 'static> {
                 Arg::with_name("since")
                     .long("since")
@@ -79,7 +88,7 @@ fn main() {
             }
 
             pub fn with(args: Vec<Arg<'static, 'static>>) -> Vec<Arg<'static, 'static>> {
-                let mut common = vec![es_index(), es_type(), es_base_url()];
+                let mut common = vec![es_index(), es_type(), es_base_url(), es_major_version()];
                 common.extend(args);
                 common
             }
@@ -236,13 +245,15 @@ fn main() {
 
             let matches = matches.subcommand_matches("trace").unwrap();
             let (tx, rx) = mpsc::channel::<TimestampedMessage>(5);
+            let mut rt = Runtime::new().unwrap();
+
             //TODO: use only one arc/mutex
-            let msg_store = MessageStore::new(es::Config::from(matches));
+            let msg_store = rt.block_on(MessageStore::detecting_es_version(es::Config::from(matches))).expect("couldn't determine ES Version");
             let msg_store2 = Arc::new(Mutex::new(msg_store.clone()));
 
             let port = value_t!(matches, "api-port", u16).unwrap_or(1337);
-            let mut rt = Runtime::new().unwrap();
 
+            //TODO read value from es-base url param
             let addr = ([127, 0, 0, 1], port).into();
 
             let new_service = move || {
@@ -270,20 +281,22 @@ fn main() {
             let pretty_print = matches.occurrences_of("pretty-print") > 0;
             let force = matches.occurrences_of("force") > 0;
 
-            let msg_store = MessageStore::new(es::Config::from(matches));
             let exporter = Exporter::new(pretty_print, force);
             let result: Result<MessageQuery, Error> = try_from::TryFrom::try_from(matches);
 
             match result {
                 Err(_) => {
                     //TODO: display value here
-                    error!("Couldn't parse a time range from supplied --since/--until values");
+                    error!("Couldn't parse a time range from supplied --since/--until values. Valid input would look like: 2018-07-08T09:10:11.012Z");
                     std::process::exit(1);
                 }
                 Ok(query) => {
                     let mut rt = Runtime::new().unwrap();
-                    let result = rt.block_on(msg_store.search(query).and_then(move |es_result| {
-                        exporter.export_messages(es_result.into(), target)
+                    let config = es::Config::from(matches);
+                    let result = rt.block_on(MessageStore::detecting_es_version(config).and_then(|msg_store| {
+                        msg_store.search(query).and_then(move |es_result| {
+                            exporter.export_messages(es_result.into(), target)
+                        })
                     }));
                     match result {
                         Ok(_) => info!("export completed."),
@@ -312,22 +325,23 @@ fn main() {
             match result {
                 Err(_) => {
                     //TODO: display value here
-                    error!("Couldn't parse a time range from supplied --since/--until values");
+                    error!("Couldn't parse a time range from supplied --since/--until values. Valid input would look like: 2018-07-08T09:10:11.012Z");
                     std::process::exit(1);
                 }
                 Ok(query) => {
                     let mut rt = Runtime::new().unwrap();
-                    let msg_store = MessageStore::new(es::Config::from(matches));
 
                     let result =
-                        rt.block_on(Box::new(msg_store.search(query).and_then(|es_result| {
-                            let stored_msgs: Vec<StoredMessage> = es_result.into();
-                            rmq::publish(
-                                rmq::Config::default(),
-                                target_exchange,
-                                target_routing_key,
-                                stored_msgs,
-                            )
+                        rt.block_on(Box::new(MessageStore::detecting_es_version(es::Config::from(matches)).and_then(|msg_store| {
+                            msg_store.search(query).and_then(|es_result| {
+                                let stored_msgs: Vec<StoredMessage> = es_result.into();
+                                rmq::publish(
+                                    rmq::Config::default(),
+                                    target_exchange,
+                                    target_routing_key,
+                                    stored_msgs,
+                                )
+                            })
                         })));
 
                     match result {

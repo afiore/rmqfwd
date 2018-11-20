@@ -4,13 +4,9 @@ use failure::Error;
 use futures::stream;
 use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
-use hyper::Body;
-use hyper::Client;
-use hyper::Method;
-use hyper::Request;
+use hyper::{header, Body, Client, Method, Request};
 use rmq::{Message, TimestampedMessage};
 use serde_json;
-use serde_json::Value;
 use std::boxed::Box;
 use std::sync::Arc;
 use url::{ParseError, Url};
@@ -29,6 +25,7 @@ pub struct Config {
     base_url: String,
     index: String,
     doc_type: String,
+    es_major_version: Option<u8>,
 }
 
 impl Default for Config {
@@ -37,33 +34,36 @@ impl Default for Config {
             base_url: "http://localhost:9200".to_string(),
             index: "rabbit_messages".to_string(),
             doc_type: "message".to_string(),
+            es_major_version: None,
         }
     }
 }
 
 impl<'a, 'b> From<&'a ArgMatches<'b>> for Config {
     fn from(matches: &'a ArgMatches<'b>) -> Config {
-        let default = Config::default();
-        let base_url = matches
-            .value_of("es-base-url")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| default.base_url.clone());
+        let mut config = Config::default();
 
-        let index = matches
-            .value_of("es-index")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| default.index.clone());
-
-        let doc_type = matches
-            .value_of("es-type")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| default.doc_type.clone());
-
-        Config {
-            base_url: base_url,
-            index: index,
-            doc_type: doc_type,
+        if let Some(base_url) = matches.value_of("es-base-url") {
+            config.base_url = base_url.to_string();
         }
+
+        if let Some(index) = matches.value_of("es-index") {
+            config.index = index.to_string();
+        }
+
+        if let Some(doc_type) = matches.value_of("es-type") {
+            config.doc_type = doc_type.to_string();
+        }
+
+        if let Some(es_major_version) = matches.value_of("es-major-version") {
+            config.es_major_version = Some(
+                es_major_version
+                    .parse::<u8>()
+                    .expect("es-major-version: positive integer expected!"),
+            );
+        }
+
+        config
     }
 }
 
@@ -71,6 +71,16 @@ impl<'a, 'b> From<&'a ArgMatches<'b>> for Config {
 pub struct EsDoc<A> {
     pub _source: A,
     pub _id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct EsCluster {
+    pub version: EsVersion,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct EsVersion {
+    pub number: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -140,7 +150,9 @@ impl Into<TimestampedMessage> for StoredMessage {
     }
 }
 
+//TODO: simply return Url, handlying error internally
 trait EsEndpoints {
+    fn root_url(&self) -> Result<Url, ParseError>;
     fn message_url(&self, id: Option<String>) -> Result<Url, ParseError>;
     fn index_url(&self) -> Result<Url, ParseError>;
     fn mapping_url(&self) -> Result<Url, ParseError>;
@@ -149,6 +161,10 @@ trait EsEndpoints {
 }
 
 impl EsEndpoints for Config {
+    fn root_url(&self) -> Result<Url, ParseError> {
+        Url::parse(&self.base_url)
+    }
+
     fn message_url(&self, id: Option<String>) -> Result<Url, ParseError> {
         let without_id = self
             .index_url()
@@ -161,7 +177,8 @@ impl EsEndpoints for Config {
     }
 
     fn index_url(&self) -> Result<Url, ParseError> {
-        Url::parse(&self.base_url).and_then(|u| u.join(&format!("{}/", &self.index)))
+        self.root_url()
+            .and_then(|u| u.join(&format!("{}/", &self.index)))
     }
 
     fn flush_url(&self) -> Result<Url, ParseError> {
@@ -198,6 +215,34 @@ pub struct MessageStore {
 }
 
 impl MessageStore {
+    pub fn detecting_es_version(mut config: Config) -> IoFuture<Self> {
+        let client = Client::new();
+        let root_url = config.root_url().unwrap();
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .header(header::CONTENT_TYPE, "application/json")
+            .uri(root_url.to_string())
+            .body(Body::empty())
+            .expect("couldn't build a request!");
+
+        Box::new(http::expect::<EsCluster>(&client, req).map(move |cluster| {
+            let version_number = cluster.version.number;
+            let major_min_bugfix = version_number.split('.');
+            match major_min_bugfix.into_iter().next().map(|s| s.parse::<u8>().expect("expected es-major-version to be an integer")) {
+                Some(n) if n == 2 || n == 6 => {
+                    debug!("Supported Elasticsearch major version detected: {}", n);
+                    config.es_major_version = Some(n);
+                }
+                _ => {
+                    warn!("Unsupported Elasticsearch version detected. Supported versions are 2xx and 6xx. This is likely to fail!");
+                }
+            };
+
+            MessageStore::new(config)
+        }))
+    }
+
     pub fn new(config: Config) -> Self {
         MessageStore {
             config: Arc::new(config),
@@ -207,9 +252,30 @@ impl MessageStore {
         let client = Client::new();
         let index_url = self.config.index_url().unwrap();
         let mappings_url = self.config.mapping_url().unwrap();
+        let config = self.config.clone();
+
+        let es_field = move |field_type: &str| {
+            if config.es_major_version == Some(2 as u8) {
+                json!({
+                   "type": field_type,
+                   "index": "not_analyzed",
+               })
+            } else {
+                let field_type = if field_type == "string" {
+                    "keyword"
+                } else {
+                    field_type
+                };
+
+                json!({
+                   "type": field_type,
+               })
+            }
+        };
 
         let req = Request::builder()
-            .method(Method::POST)
+            .method(Method::PUT)
+            .header(header::CONTENT_TYPE, "application/json")
             .uri(index_url.to_string())
             .body(Body::empty())
             .expect("couldn't build a request!");
@@ -217,33 +283,15 @@ impl MessageStore {
         Box::new(http::expect_ok(&client, req).and_then(move |_| {
             let mappings: serde_json::Value = json!({
                 "properties": {
-                    "replayed": {
-                        "type": "boolean",
-                        "index": "not_analyzed"
-                    },
-                    "received_at": {
-                        "type": "date",
-                        "index": "not_analyzed"
-                    },
+                    "replayed": es_field("boolean"),
+                    "received_at": es_field("date"),
                     "message": {
                         "type": "nested",
                         "properties": {
-                            "exchange": {
-                                "type": "string",
-                                "index": "not_analyzed"
-                            },
-                            "routing_key": {
-                                "type": "string",
-                                "index": "not_analyzed"
-                            },
-                            "redelivered": {
-                                "type": "boolean",
-                                "index": "not_analyzed"
-                            },
-                            "uuid": {
-                                "type": "string",
-                                "index": "not_analyzed"
-                            },
+                            "exchange": es_field("string"),
+                            "routing_key": es_field("string"),
+                            "redelivered": es_field("boolean"),
+                            "uuid": es_field("string"),
                             "headers": {
                                 "type": "object",
                                 "enabled": "false"
@@ -255,6 +303,7 @@ impl MessageStore {
 
             let req = Request::builder()
                 .method(Method::PUT)
+                .header(header::CONTENT_TYPE, "application/json")
                 .uri(mappings_url.to_string())
                 .body(Body::wrap_stream(stream::once(serde_json::to_string(
                     &mappings,
@@ -281,7 +330,8 @@ impl MessageSearchService for MessageStore {
         let index_url = self.config.index_url().unwrap();
 
         let req = Request::builder()
-            .method(Method::HEAD)
+            .method(Method::GET)
+            .header(header::CONTENT_TYPE, "application/json")
             .uri(index_url.to_string())
             .body(Body::empty())
             .expect("couldn't build a request!");
@@ -310,6 +360,7 @@ impl MessageSearchService for MessageStore {
                     let mut req = Request::builder();
 
                     req.method(Method::POST).uri(ep_url.clone());
+                    req.header(header::CONTENT_TYPE, "application/json");
                     http::expect_ok(
                         &client,
                         req.body(body)
@@ -337,7 +388,7 @@ impl MessageSearchService for MessageStore {
     fn search(&self, query: query::MessageQuery) -> IoFuture<EsResult<TimestampedMessage>> {
         let client = Client::new();
         let search_url = self.config.search_url().unwrap();
-        let json_query: Value = query.into();
+        let json_query = query.as_json(self.config.es_major_version);
         info!(
             "sending ES query: {} to {:?}",
             serde_json::to_string_pretty(&json_query).unwrap(),
@@ -347,6 +398,7 @@ impl MessageSearchService for MessageStore {
         let body = Body::wrap_stream(stream::once(serde_json::to_string(&json_query)));
         let req = Request::builder()
             .method(Method::POST)
+            .header(header::CONTENT_TYPE, "application/json")
             .uri(search_url.to_string())
             .body(body)
             .expect("couldn't build a request!");
@@ -371,11 +423,11 @@ pub mod test {
 
     fn reset_store(config: Config) -> IoFuture<MessageStore> {
         let client = Client::new();
-        let store = MessageStore::new(config.clone());
         let index_url = config.index_url().unwrap().to_string();
 
         let head_req = Request::builder()
             .method(Method::HEAD)
+            .header(header::CONTENT_TYPE, "application/json")
             .uri(index_url.to_string())
             .body(Body::empty())
             .expect("couldn't build a request!");
@@ -385,16 +437,20 @@ pub mod test {
                 let delete_req = Request::builder()
                     .uri(index_url)
                     .method(Method::DELETE)
+                    .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::empty())
                     .expect("couldn't build DELETE request");
 
-                debug!("deleting store ...");
                 http::expect_ok(&client, delete_req)
             } else {
                 Box::new(future::lazy(|| Ok(())))
             };
 
-            Box::new(clean.and_then(move |_| store.init_store().map(move |_| store)))
+            Box::new(
+                clean
+                    .and_then(move |_| MessageStore::detecting_es_version(config.clone()))
+                    .and_then(|store| store.init_store().map(move |_| store)),
+            )
         }))
     }
 
@@ -412,6 +468,7 @@ pub mod test {
                 let msg_json = Body::wrap_stream(stream::once(serde_json::to_string_pretty(&msg)));
                 let req = Request::builder()
                     .uri(msg_url.to_string())
+                    .header(header::CONTENT_TYPE, "application/json")
                     .method(Method::PUT)
                     .body(msg_json)
                     .expect("couldn't build a request!");
@@ -422,6 +479,7 @@ pub mod test {
                 let req = Request::builder()
                     .uri(flush_url.to_string())
                     .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::empty())
                     .expect("couldn't build a request!");
 
@@ -430,7 +488,6 @@ pub mod test {
         }))
     }
 
-    //TODO: borrow messages
     fn init_test_store(rt: &mut Runtime, msgs: Vec<StoredMessage>) -> MessageStore {
         let config = Config {
             index: "rabbit_messages_test".to_string(),
@@ -537,6 +594,7 @@ pub mod test {
 
     #[test]
     fn filter_by_exchange_works() {
+        env_logger::init();
         let in_store = vec![
             MessageBuilder::published_on("a", "exchange-2").build(),
             MessageBuilder::published_on("b", "exchange-1").build(),
