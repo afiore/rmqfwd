@@ -25,7 +25,6 @@ futures = "0.1"
 log = "0.4"
 env_logger = "0.5"
 chrono = { version = "0.4", features = ["serde"] }
-lazy_static = "1"
 clap = "2"
 hyper = "0.12"
 url = "1.7"
@@ -35,3 +34,6 @@ try_from = "0.2"
 
 [dev-dependencies]
 tempdir = "0.3"
+
+[badges]
+travis-ci = { repository = "afiore/rmqfwd", branch = "master" }
