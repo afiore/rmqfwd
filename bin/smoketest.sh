@@ -1,4 +1,4 @@
-set -e -x
+set -e
 
 rmq_admin=./bin/rabbitmqadmin
 exchange=some-exchange
@@ -61,7 +61,7 @@ i=0
 while [ $i -lt 2 ]
 do
   echo "republishing message with uuid: ${uuids[$i]}"
-  RUST_LOG='rmqfwd=debug' $rmqfwd_bin replay $rmqfwd_common_ops -b ${uuids[$i]} -e "publish.$exchange" --target-exchange $other_exchange --target-routing-key $routing_key
+  RUST_LOG='rmqfwd=debug' $rmqfwd_bin replay $rmqfwd_common_ops -b "${uuids[$i]}" -e "publish.$exchange" --target-exchange $other_exchange --target-routing-key $routing_key
   sleep 2
   ((i+=1))
 done
@@ -77,7 +77,7 @@ fi
 
 # 2. export one single message, checking target directory contains expected file
 
-$RUST_LOG=rmqfwd=debug $rmqfwd_bin export $rmqfwd_common_ops -f -p -e "publish.$exchange" -b ${uuids[0]} $rmqfwd_timerange_ops  $export_dir
+RUST_LOG=rmqfwd=debug $rmqfwd_bin export $rmqfwd_common_ops -f -p -e "publish.$exchange" -b "${uuids[0]}" $rmqfwd_timerange_ops  $export_dir
 sleep 1
 expected=1
 file_count=$(find $export_dir -name '*.json' | wc -l)

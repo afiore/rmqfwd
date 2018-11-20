@@ -289,7 +289,6 @@ impl MessageStore {
                         "type": "nested",
                         "properties": {
                             "exchange": es_field("string"),
-                            "body": es_field("string"),
                             "routing_key": es_field("string"),
                             "redelivered": es_field("boolean"),
                             "uuid": es_field("string"),

@@ -2,6 +2,16 @@
 name = "rmqfwd"
 version = "0.1.0"
 authors = ["Andrea Fiore <andrea.giulio.fiore@gmail.com>"]
+description = "A tool to persist, export and republish RabbitMQ messages"
+readme = "README.md"
+keywords = ["amqp", "rabbitmq", "elasticsearch", "messaging"]
+license = "MIT/Apache-2.0"
+repository = "https://github.com/afiore/rmqfwd"
+include = [
+  "**/*.rs",
+  "Cargo.toml",
+  "README.md"
+]
 
 [dependencies]
 lapin-futures = "^0.13"

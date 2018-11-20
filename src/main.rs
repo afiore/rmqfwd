@@ -27,7 +27,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 
-
 fn main() {
     env_logger::init();
 
