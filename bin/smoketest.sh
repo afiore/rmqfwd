@@ -62,7 +62,7 @@ while [ $i -lt 2 ]
 do
   echo "republishing message with uuid: ${uuids[$i]}"
   $rmqfwd_bin replay $rmqfwd_common_ops -b ${uuids[$i]} -e "publish.$exchange" --target-exchange $other_exchange --target-routing-key $routing_key
-  sleep 5
+  sleep 2
   ((i+=1))
 done
 
@@ -70,6 +70,8 @@ msg_count=$($rmq_admin --format tsv get queue=$other_queue count=10| sed -E 1d |
 expected=2
 if [ "$msg_count" -ne "$expected" ]
 then
+  echo "debug: raw output from $rmq_admin"
+  $rmq_admin --format tsv get queue=$other_queue count=10
   exit_with_error "Expecting $expected messages to be republished in $other_queue. Found $msg_count instead!"
 else
   notice "replay command ok"
