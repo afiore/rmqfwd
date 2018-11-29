@@ -8,6 +8,8 @@ stdenv.mkDerivation {
       pkgs.python
       pkgs.rustc
       pkgs.cargo
+      pkgs.fzf
+      pkgs.jq
       pkgs.psmisc
     ];
 

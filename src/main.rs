@@ -34,6 +34,37 @@ fn main() {
         pub mod common {
             use clap::Arg;
 
+            pub fn rmq_host() -> Arg<'static, 'static> {
+                Arg::with_name("rmq-host")
+                    .long("rmq-host")
+                    .required(false)
+                    .takes_value(true)
+                    .long_help(
+                        "Override the Rabbitmq host (default value: '127.0.0.1')",
+                    )
+            }
+
+            pub fn rmq_port() -> Arg<'static, 'static> {
+                Arg::with_name("rmq-port")
+                    .long("rmq-port")
+                    .required(false)
+                    .takes_value(true)
+                    .long_help(
+                        "Override the Rabbitmq port (default value: '5672')",
+                    )
+            }
+
+            pub fn rmq_exchange() -> Arg<'static, 'static> {
+                Arg::with_name("rmq-exchange")
+                    .long("rmq-exchange")
+                    .required(false)
+                    .takes_value(true)
+                    .long_help(
+                        "Override the Rabbitmq tracing exchange name (default value: 'amq.rabbitmq.trace')",
+                    )
+            }
+
+
             pub fn es_index() -> Arg<'static, 'static> {
                 Arg::with_name("es-index")
                     .long("es-index")
@@ -88,7 +119,7 @@ fn main() {
             }
 
             pub fn with(args: Vec<Arg<'static, 'static>>) -> Vec<Arg<'static, 'static>> {
-                let mut common = vec![es_index(), es_type(), es_base_url(), es_major_version()];
+                let mut common = vec![rmq_host(), rmq_port(), rmq_exchange(), es_index(), es_type(), es_base_url(), es_major_version()];
                 common.extend(args);
                 common
             }
@@ -253,7 +284,6 @@ fn main() {
 
             let port = value_t!(matches, "api-port", u16).unwrap_or(1337);
 
-            //TODO read value from es-base url param
             let addr = ([127, 0, 0, 1], port).into();
 
             let new_service = move || {
@@ -271,7 +301,7 @@ fn main() {
             rt.spawn(server);
             rt.spawn(msg_store.write(rx).map_err(|_| ()));
 
-            rt.block_on(rmq::bind_and_consume(Config::default(), tx))
+            rt.block_on(rmq::bind_and_consume(Config::from(matches), tx))
                 .expect("runtime error!");
         }
         Some("export") => {
@@ -320,6 +350,7 @@ fn main() {
                 .value_of("target-routing-key")
                 .map(|s| s.to_string());
 
+            let rmq_config = rmq::Config::from(matches);
             let result: Result<MessageQuery, Error> = try_from::TryFrom::try_from(matches);
 
             match result {
@@ -336,7 +367,7 @@ fn main() {
                             msg_store.search(query).and_then(|es_result| {
                                 let stored_msgs: Vec<StoredMessage> = es_result.into();
                                 rmq::publish(
-                                    rmq::Config::default(),
+                                    rmq_config,
                                     target_exchange,
                                     target_routing_key,
                                     stored_msgs,

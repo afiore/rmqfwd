@@ -15,7 +15,7 @@ services:
     environment:
       HAB_RABBITMQ: '{"loopback_users": {"guest": false}}'
     ports:
-         - 5672:5672
+         - 5673:5672
          - 15672:15672
 #        - 9631:9631 # Habitat supervisor
     hostname: "messaging"

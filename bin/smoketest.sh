@@ -13,7 +13,7 @@ export_dir=/tmp/rmqfwd_exports
 es_index=smoketest
 es_type=message
 rmqfwd_timerange_ops="--since 2010-07-08T09:10:11.012Z --until 2030-07-08T09:10:11.012Z"
-rmqfwd_common_ops="--es-index $es_index --es-type $es_type"
+rmqfwd_common_ops="--rmq-port 5673 --es-index $es_index --es-type $es_type"
 uuids=()
 
 trap "killall rmqfwd" EXIT 

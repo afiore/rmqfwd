@@ -1,4 +1,5 @@
 use chrono::prelude::*;
+use clap::ArgMatches;
 use es::StoredMessage;
 use failure::Error;
 use futures::future::Future;
@@ -245,6 +246,28 @@ impl Config {
             .expect(&format!("cannot resolve {}", host_port))
             .next()
             .unwrap()
+    }
+}
+
+impl<'a, 'b> From<&'a ArgMatches<'b>> for Config {
+    fn from(matches: &'a ArgMatches<'b>) -> Config {
+        let mut config = Config::default();
+
+        if let Some(host) = matches.value_of("rmq-host") {
+            config.host = host.to_string();
+        }
+
+        if let Some(port) = matches.value_of("rmq-port") {
+            config.port = port
+                .parse::<u16>()
+                .expect("rmq-port: postive integer expected!")
+        }
+
+        if let Some(exchange) = matches.value_of("rmq-exchange") {
+            config.exchange = exchange.to_string();
+        }
+
+        config
     }
 }
 
