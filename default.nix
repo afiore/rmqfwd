@@ -3,14 +3,15 @@ with import <nixpkgs> {};
 stdenv.mkDerivation {
     name = "rmqfwd";
 
-    buildInputs = [
-      pkgs.curl
-      pkgs.python
-      pkgs.rustc
-      pkgs.cargo
-      pkgs.fzf
-      pkgs.jq
-      pkgs.psmisc
+    buildInputs = with pkgs; [
+      curl
+      python
+      rustup
+      fzf
+      jq
+      psmisc
+      git
+      gitAndTools.hub
     ];
 
     RUST_LOG="warn";

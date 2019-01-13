@@ -1,6 +1,9 @@
 set -e
 
+rmq_username=test_user
+rmq_password=test_password
 rmq_admin=./bin/rabbitmqadmin
+rmq_admin_opts="--username=$rmq_username --password=$rmq_password"
 exchange=some-exchange
 other_exchange=some-other-exchange
 queue=some-queue
@@ -13,7 +16,7 @@ export_dir=/tmp/rmqfwd_exports
 es_index=smoketest
 es_type=message
 rmqfwd_timerange_ops="--since 2010-07-08T09:10:11.012Z --until 2030-07-08T09:10:11.012Z"
-rmqfwd_common_ops="--rmq-port 5673 --es-index $es_index --es-type $es_type"
+rmqfwd_common_ops="--rmq-port 5673 --rmq-creds $rmq_username:$rmq_password --es-index $es_index --es-type $es_type"
 uuids=()
 
 trap "killall rmqfwd" EXIT 
@@ -26,15 +29,15 @@ then
   chmod +x $rmq_admin
 fi
 
-$rmq_admin declare exchange name=$exchange type=topic
+$rmq_admin $rmq_admin_opts declare exchange name=$exchange type=topic
 
-$rmq_admin declare exchange name=$other_exchange type=topic
+$rmq_admin $rmq_admin_opts declare exchange name=$other_exchange type=topic
 
-$rmq_admin declare queue name=$queue
-$rmq_admin declare queue name=$other_queue
+$rmq_admin $rmq_admin_opts declare queue name=$queue
+$rmq_admin $rmq_admin_opts declare queue name=$other_queue
 
-$rmq_admin declare binding source=$exchange destination=$queue routing_key=$routing_key
-$rmq_admin declare binding source=$other_exchange destination=$other_queue routing_key=$routing_key
+$rmq_admin $rmq_admin_opts declare binding source=$exchange destination=$queue routing_key=$routing_key
+$rmq_admin $rmq_admin_opts declare binding source=$other_exchange destination=$other_queue routing_key=$routing_key
 
 exit_with_error() {
   echo -e "\e[31m$1\e[0m"
@@ -51,7 +54,7 @@ do
   uuid=$(cat /proc/sys/kernel/random/uuid)
   uuids[$i]=$uuid
   echo "sending message $i..."
-  $rmq_admin publish routing_key=$routing_key exchange="$exchange" payload="message ${uuids[$i]}"
+  $rmq_admin $rmq_admin_opts publish routing_key=$routing_key exchange="$exchange" payload="message ${uuids[$i]}"
   sleep 1
   ((i+=1))
 done
@@ -66,7 +69,7 @@ do
   ((i+=1))
 done
 
-msg_count=$($rmq_admin --format tsv get queue=$other_queue count=10| sed -E 1d | wc -l)
+msg_count=$($rmq_admin $rmq_admin_opts --format tsv get queue=$other_queue count=10| sed -E 1d | wc -l)
 expected=2
 if [ "$msg_count" -ne "$expected" ]
 then

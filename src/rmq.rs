@@ -230,11 +230,18 @@ impl From<Delivery> for Message {
     }
 }
 
+#[derive(Clone)]
+pub struct Creds {
+    pub user: String,
+    pub password: String,
+}
+
 pub struct Config {
     pub host: String,
     pub port: u16,
     pub exchange: String,
     pub queue_name: String,
+    pub creds: Option<Creds>,
 }
 
 impl Config {
@@ -267,6 +274,20 @@ impl<'a, 'b> From<&'a ArgMatches<'b>> for Config {
             config.exchange = exchange.to_string();
         }
 
+        if let Some(rmq_creds) = matches.value_of("rmq-creds") {
+            let mut creds_tokens = rmq_creds.split(":").into_iter();
+
+            if let Some((user, pass)) = creds_tokens
+                .next()
+                .and_then(|user| creds_tokens.next().map(|pass| (user, pass)))
+            {
+                config.creds = Some(Creds {
+                    user: user.to_string(),
+                    password: pass.to_string(),
+                });
+            }
+        }
+
         config
     }
 }
@@ -278,6 +299,7 @@ impl Default for Config {
             port: 5672,
             exchange: "amq.rabbitmq.trace".to_string(),
             queue_name: "rabbit-forwarder".to_string(),
+            creds: None,
         }
     }
 }
@@ -285,18 +307,24 @@ impl Default for Config {
 fn setup_channel(
     config: Config,
 ) -> Box<Future<Item = Channel<TcpStream>, Error = io::Error> + Send> {
+    let defaults = ConnectionOptions::default();
+    let (username, password) = config
+        .creds
+        .clone()
+        .map(|c| (c.user, c.password))
+        .unwrap_or((defaults.username, defaults.password));
+
+    let connection_opts = ConnectionOptions {
+        frame_max: 65535,
+        heartbeat: 20,
+        username: username,
+        password: password,
+        ..defaults
+    };
     Box::new(
         TcpStream::connect(&config.address())
-            .and_then(|stream| {
-                client::Client::connect(
-                    stream,
-                    ConnectionOptions {
-                        frame_max: 65535,
-                        heartbeat: 20,
-                        ..Default::default()
-                    },
-                )
-            }).and_then(|(client, heartbeat)| {
+            .and_then(|stream| client::Client::connect(stream, connection_opts))
+            .and_then(|(client, heartbeat)| {
                 tokio::spawn(heartbeat.map_err(|e| eprintln!("heartbeat error: {:?}", e)))
                     .into_future()
                     .map(|_| client)
@@ -354,9 +382,6 @@ pub fn bind_and_consume(
         let id = channel.id;
         info!("created channel with id: {}", id);
 
-        // we using a "move" closure to reuse the channel
-        // once the queue is declared. We could also clone
-        // the channel
         channel
             .queue_declare(
                 &queue_name,

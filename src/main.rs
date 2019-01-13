@@ -64,6 +64,16 @@ fn main() {
                     )
             }
 
+            pub fn rmq_creds() -> Arg<'static, 'static> {
+                Arg::with_name("rmq-creds")
+                    .long("rmq-creds")
+                    .required(false)
+                    .takes_value(true)
+                    .long_help(
+                        "Sets the Rabbitmq access credentials (format: 'username:password')",
+                    )
+            }
+
 
             pub fn es_index() -> Arg<'static, 'static> {
                 Arg::with_name("es-index")
@@ -119,7 +129,8 @@ fn main() {
             }
 
             pub fn with(args: Vec<Arg<'static, 'static>>) -> Vec<Arg<'static, 'static>> {
-                let mut common = vec![rmq_host(), rmq_port(), rmq_exchange(), es_index(), es_type(), es_base_url(), es_major_version()];
+                let mut common = vec![rmq_host(), rmq_port(), rmq_exchange(), rmq_creds(),
+                es_index(), es_type(), es_base_url(), es_major_version()];
                 common.extend(args);
                 common
             }
