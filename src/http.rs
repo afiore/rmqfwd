@@ -1,6 +1,7 @@
 use futures::{future, Future};
 
-use es::{MessageQuery, MessageSearchService, MessageStore};
+use es::query::MessageQuery;
+use es::{FilteredQuery, MessageSearchService, MessageStore};
 use hyper::error::Error;
 use hyper::{header, Body, Method, Request, Response, StatusCode};
 use serde_json;
@@ -46,11 +47,11 @@ pub fn routes(
                     resp
                 }
                 Ok(query) => {
-                    let mut query: MessageQuery = query;
-                    query.aggregate_terms = true;
+                    let mut fq: FilteredQuery = query;
+                    fq.aggregate_terms = true;
 
                     let msg_store = msg_store.lock().unwrap();
-                    Box::new(msg_store.search(query).then(|results| {
+                    Box::new(msg_store.search(MessageQuery::Filtered(fq)).then(|results| {
                             match results {
                                 Ok(docs) => Ok(Response::builder()
                                     .header(header::CONTENT_TYPE, "application/json")

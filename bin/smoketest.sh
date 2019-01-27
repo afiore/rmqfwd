@@ -109,4 +109,24 @@ then
    notice "search endpoint ok"
 fi
 
+# 4. export messages by id
+ids=($(curl 'http://localhost:1337?exchange=publish.some-exchange' | jq '.hits.hits[]._id'| head -n 3 | tr -d '"'))
+ids_ops=""
+for id in "${ids[@]}"
+do
+  ids_ops="$ids_ops --id $id"
+done
+
+RUST_LOG=rmqfwd=debug $rmqfwd_bin export $rmqfwd_common_ops $ids_ops -f $export_dir
+for id in "${ids[@]}"
+do
+  id_file="${export_dir}/$id.json"	
+  if [ ! -f $id_file ]
+  then
+    exit_with_error "Expect $id_file to exists."
+    exit 1
+  else
+    notice "$id_file found ..."
+  fi
+done
 notice "Smoketest passed!"

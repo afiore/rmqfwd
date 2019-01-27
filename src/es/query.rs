@@ -10,7 +10,7 @@ use TimeRange;
 use TimeRangeError;
 
 #[derive(Debug)]
-pub struct MessageQuery {
+pub struct FilteredQuery {
     pub exchange: Option<String>,
     pub body: Option<String>,
     pub routing_key: Option<String>,
@@ -20,7 +20,13 @@ pub struct MessageQuery {
     pub aggregate_terms: bool,
 }
 
-impl TryFrom<HashMap<String, String>> for MessageQuery {
+#[derive(Debug)]
+pub enum MessageQuery {
+    Filtered(FilteredQuery),
+    Ids(Vec<String>),
+}
+
+impl TryFrom<HashMap<String, String>> for FilteredQuery {
     type Err = Error;
 
     fn try_from(h: HashMap<String, String>) -> Result<Self, Error> {
@@ -61,17 +67,30 @@ impl TryFrom<HashMap<String, String>> for MessageQuery {
     }
 }
 
+fn ids<'s, 't>(matches: &'s ArgMatches<'t>) -> Option<Vec<String>> {
+    matches
+        .values_of("id")
+        .map(|ids| ids.map(|s| s.to_string()).collect())
+}
+
+fn try_filtered<'s, 't>(matches: &'s ArgMatches<'t>) -> Result<FilteredQuery, Error> {
+    let mut h: HashMap<String, String> = HashMap::new();
+    for (k, v) in matches.args.iter() {
+        if v.vals.len() > 0 {
+            //TODO: is there a safer way to convert OsString to String?
+            h.insert(k.to_string(), v.vals[0].clone().into_string().unwrap());
+        }
+    }
+    TryFrom::try_from(h)
+}
+
 impl<'s, 't> TryFrom<&'s ArgMatches<'t>> for MessageQuery {
     type Err = Error;
     fn try_from(matches: &'s ArgMatches<'t>) -> Result<Self, Error> {
-        let mut h: HashMap<String, String> = HashMap::new();
-        for (k, v) in matches.args.iter() {
-            if v.vals.len() > 0 {
-                //TODO: is there a safer way to convert OsString to String?
-                h.insert(k.to_string(), v.vals[0].clone().into_string().unwrap());
-            }
-        }
-        TryFrom::try_from(h)
+        ids(matches)
+            .map(|ids| MessageQuery::Ids(ids))
+            .ok_or(format_err!("Couldn't parse id"))
+            .or(try_filtered(matches).map(|fq| MessageQuery::Filtered(fq)))
     }
 }
 
@@ -88,7 +107,7 @@ fn merge(a: &mut Value, b: &Value) {
     }
 }
 
-impl MessageQuery {
+impl FilteredQuery {
     pub fn as_json(&self, es_major_version: Option<u8>) -> Value {
         let mut nested: Vec<Value> = Vec::new();
 
@@ -142,7 +161,7 @@ impl MessageQuery {
             let es_fmt = "yyyy-MM-dd HH:mm:ss";
             let filter = match time_range {
                 TimeRange::Within(start, end) => json!({
-                    "gte": start.format(fmt).to_string(), 
+                    "gte": start.format(fmt).to_string(),
                     "lte": end.format(fmt).to_string(),
                     "format": es_fmt
                 }),
@@ -164,7 +183,7 @@ impl MessageQuery {
         }
 
         let mut obj = json!({
-            "from": self.from, 
+            "from": self.from,
             "size": 25,
             "query": {
                  "bool": {
@@ -177,19 +196,19 @@ impl MessageQuery {
             merge(
                 &mut obj,
                 &json!({"aggs": {
-                       "message": {
-                          "nested" : {
-                              "path" : "message"
-                          },
-                          "aggs": {
-                          	"exchange": {
-                          		"terms": { "field": "message.exchange" }
-                          	},
-                          	"routing_key": {
-                          		"terms": { "field": "message.routing_key" }
-                          	}
-                          }
-                       }}}),
+                "message": {
+                   "nested" : {
+                       "path" : "message"
+                   },
+                   "aggs": {
+                       "exchange": {
+                           "terms": { "field": "message.exchange" }
+                       },
+                       "routing_key": {
+                           "terms": { "field": "message.routing_key" }
+                       }
+                   }
+                }}}),
             );
         }
 
@@ -200,13 +219,13 @@ impl MessageQuery {
 }
 
 pub struct MessageQueryBuilder {
-    query: MessageQuery,
+    query: FilteredQuery,
 }
 
 impl Default for MessageQueryBuilder {
     fn default() -> Self {
         MessageQueryBuilder {
-            query: MessageQuery {
+            query: FilteredQuery {
                 exchange: None,
                 body: None,
                 routing_key: None,
@@ -250,7 +269,7 @@ impl MessageQueryBuilder {
         self
     }
 
-    pub fn build(self) -> MessageQuery {
+    pub fn build(self) -> FilteredQuery {
         self.query
     }
 }

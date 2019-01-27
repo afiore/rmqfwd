@@ -16,7 +16,6 @@ use lapin::message::Delivery;
 use lapin::types::*;
 use serde_json;
 use std::collections::BTreeMap;
-use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::str;
 use tokio;
@@ -306,7 +305,7 @@ impl Default for Config {
 
 fn setup_channel(
     config: Config,
-) -> Box<Future<Item = Channel<TcpStream>, Error = io::Error> + Send> {
+) -> Box<Future<Item = Channel<TcpStream>, Error = failure::Error> + Send + 'static> {
     let defaults = ConnectionOptions::default();
     let (username, password) = config
         .creds
@@ -321,15 +320,24 @@ fn setup_channel(
         password: password,
         ..defaults
     };
+    //TODO: do we have to convert the error at each step?
     Box::new(
         TcpStream::connect(&config.address())
-            .and_then(|stream| client::Client::connect(stream, connection_opts))
+            .map_err(Error::from)
+            .and_then(|stream| {
+                client::Client::connect(stream, connection_opts).map_err(Error::from)
+            })
             .and_then(|(client, heartbeat)| {
                 tokio::spawn(heartbeat.map_err(|e| eprintln!("heartbeat error: {:?}", e)))
                     .into_future()
                     .map(|_| client)
-                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "spawn error"))
-            }).and_then(|client| client.create_confirm_channel(ConfirmSelectOptions::default())),
+                    .map_err(|_| failure::err_msg("spawn error"))
+            })
+            .and_then(|client| {
+                client
+                    .create_confirm_channel(ConfirmSelectOptions::default())
+                    .map_err(Error::from)
+            }),
     )
 }
 
@@ -338,42 +346,42 @@ pub fn publish<I>(
     exchange: String,
     routing_key: Option<String>,
     stored_msgs: I,
-) -> Box<Future<Item = (), Error = Error> + Send>
+) -> Box<Future<Item = (), Error = failure::Error> + Send + 'static>
 where
     I: IntoIterator<Item = StoredMessage> + Send + 'static,
 {
-    Box::new(
-        setup_channel(config)
-            .and_then(move |channel| {
-                let routing_key = routing_key.unwrap_or("#".to_string());
+    Box::new(setup_channel(config).and_then(move |channel| {
+        let routing_key = routing_key.unwrap_or("#".to_string());
 
-                future::join_all(stored_msgs.into_iter().map(move |stored| {
-                    debug!(
-                        "replaying message: {:#?} to exchange: {:?} with routing key: {:?}",
-                        stored, exchange, routing_key
-                    );
-                    let is_replayed = true;
-                    let basic_properties = stored.message.basic_properties(is_replayed);
-                    let msg_body = stored.message.body.into_bytes();
-                    channel
-                        .basic_publish(
-                            &exchange,
-                            &routing_key,
-                            msg_body,
-                            BasicPublishOptions::default(),
-                            basic_properties,
-                        ).map(|confirmation| {
-                            debug!("got confirmation of publication: {:?}", confirmation);
-                        })
-                })).map(|_| ())
-            }).map_err(|e| e.into()),
-    )
+        future::join_all(stored_msgs.into_iter().map(move |stored| {
+            debug!(
+                "replaying message: {:#?} to exchange: {:?} with routing key: {:?}",
+                stored, exchange, routing_key
+            );
+            let is_replayed = true;
+            let basic_properties = stored.message.basic_properties(is_replayed);
+            let msg_body = stored.message.body.into_bytes();
+            channel
+                .basic_publish(
+                    &exchange,
+                    &routing_key,
+                    msg_body,
+                    BasicPublishOptions::default(),
+                    basic_properties,
+                )
+                .map(|confirmation| {
+                    debug!("got confirmation of publication: {:?}", confirmation);
+                })
+        }))
+        .map_err(Error::from)
+        .map(|_| ())
+    }))
 }
 
 pub fn bind_and_consume(
     config: Config,
     tx: Sender<TimestampedMessage>,
-) -> Box<Future<Item = (), Error = io::Error> + Send> {
+) -> Box<Future<Item = (), Error = failure::Error> + Send> {
     let mut tx = tx.clone().wait();
     let queue_name = config.queue_name.clone();
     let exchange = config.exchange.clone();
@@ -387,7 +395,8 @@ pub fn bind_and_consume(
                 &queue_name,
                 QueueDeclareOptions::default(),
                 FieldTable::default(),
-            ).and_then(move |queue| {
+            )
+            .and_then(move |queue| {
                 info!("channel {} declared queue {}", id, &queue_name);
                 channel
                     .queue_bind(
@@ -396,7 +405,8 @@ pub fn bind_and_consume(
                         "#",
                         QueueBindOptions::default(),
                         FieldTable::default(),
-                    ).map(move |_| (channel, queue))
+                    )
+                    .map(move |_| (channel, queue))
                     .and_then(move |(channel, queue)| {
                         info!("creating consumer");
                         channel
@@ -405,8 +415,10 @@ pub fn bind_and_consume(
                                 "",
                                 BasicConsumeOptions::default(),
                                 FieldTable::new(),
-                            ).map(move |stream| (channel, stream))
-                    }).and_then(move |(channel, stream)| {
+                            )
+                            .map(move |stream| (channel, stream))
+                    })
+                    .and_then(move |(channel, stream)| {
                         stream.for_each(move |delivery| {
                             let tag = delivery.delivery_tag.clone();
                             debug!("got message: {:?}", delivery);
@@ -421,5 +433,6 @@ pub fn bind_and_consume(
                         })
                     })
             })
+            .map_err(Error::from)
     }))
 }
