@@ -17,7 +17,7 @@ use failure::Error;
 use futures::prelude::*;
 use futures::sync::mpsc;
 use rmqfwd::es;
-use rmqfwd::es::MessageQuery;
+use rmqfwd::es::query::MessageQuery;
 use rmqfwd::es::{MessageSearchService, MessageStore, StoredMessage};
 use rmqfwd::fs::*;
 use rmqfwd::rmq;
@@ -128,6 +128,17 @@ fn main() {
                     .long_help("Include only messages published before the supplied datetime")
             }
 
+            pub fn ids() -> Arg<'static, 'static> {
+                Arg::with_name("id")
+                    .long("id")
+                    .takes_value(true)
+                    .conflicts_with_all(&["since", "until", "exchange", "routing-key", "message-body"])
+                    .multiple(true)
+                    .min_values(1)
+                    .long_help("a space separated list of message ids")
+
+            }
+
             pub fn with(args: Vec<Arg<'static, 'static>>) -> Vec<Arg<'static, 'static>> {
                 let mut common = vec![rmq_host(), rmq_port(), rmq_exchange(), rmq_creds(),
                 es_index(), es_type(), es_base_url(), es_major_version()];
@@ -198,7 +209,6 @@ fn main() {
             use clap::Arg;
             pub fn exchange() -> Arg<'static, 'static> {
                 Arg::with_name("exchange")
-                    .required(true)
                     .takes_value(true)
                     .short("e")
                     .long("exchange")
@@ -263,7 +273,9 @@ fn main() {
                 SubCommand
                 ::with_name("export")
                     .about("Query the message store and write the result to the file system")
+
                     .args(arg::common::with(vec![
+                                            arg::common::ids(),
                                             arg::common::since(), arg::common::until(),
                                             arg::export::exchange(), arg::export::routing_key(), arg::export::msg_body(),
                                             arg::export::target(), arg::export::pretty_print(), arg::export::force()]).as_slice() ))
@@ -273,6 +285,7 @@ fn main() {
                 ::with_name("replay") //TODO: rename to republish
                     .about("Reublish a subset of the messages present in the data store to an arbitrary exchange")
                     .args(arg::common::with(vec![
+                                            arg::common::ids(),
                                             arg::common::since(), arg::common::until(),
                                             arg::replay::exchange(), arg::replay::routing_key(), arg::replay::msg_body(),
                                             arg::replay::target_exchange(), arg::replay::target_routing_key()]).as_slice()));
@@ -318,7 +331,7 @@ fn main() {
         Some("export") => {
             let matches = matches.subcommand_matches("export").unwrap();
 
-            let target: PathBuf = matches.value_of_os("target").unwrap().clone().into();
+            let target: PathBuf = (*matches.value_of_os("target").unwrap()).into();
             let pretty_print = matches.occurrences_of("pretty-print") > 0;
             let force = matches.occurrences_of("force") > 0;
 

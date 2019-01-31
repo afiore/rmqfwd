@@ -1,16 +1,16 @@
 //TODO: consider using nightly
 extern crate try_from;
 
+use crate::TimeRange;
+use crate::TimeRangeError;
 use clap::ArgMatches;
 use failure::Error;
 use serde_json::Value;
 use std::collections::HashMap;
 use try_from::TryFrom;
-use TimeRange;
-use TimeRangeError;
 
 #[derive(Debug)]
-pub struct MessageQuery {
+pub struct FilteredQuery {
     pub exchange: Option<String>,
     pub body: Option<String>,
     pub routing_key: Option<String>,
@@ -20,7 +20,13 @@ pub struct MessageQuery {
     pub aggregate_terms: bool,
 }
 
-impl TryFrom<HashMap<String, String>> for MessageQuery {
+#[derive(Debug)]
+pub enum MessageQuery {
+    Filtered(FilteredQuery),
+    Ids(Vec<String>),
+}
+
+impl TryFrom<HashMap<String, String>> for FilteredQuery {
     type Err = Error;
 
     fn try_from(h: HashMap<String, String>) -> Result<Self, Error> {
@@ -32,15 +38,15 @@ impl TryFrom<HashMap<String, String>> for MessageQuery {
 
         let mut query = MessageQueryBuilder::default();
 
-        for each in exchange {
-            query = query.with_exchange(&each);
+        if let Some(exchange) = exchange {
+            query = query.with_exchange(&exchange);
         }
 
-        for key in routing_key {
-            query = query.with_routing_key(&key);
+        if let Some(routing_key) = routing_key {
+            query = query.with_routing_key(&routing_key);
         }
 
-        for body in body {
+        if let Some(body) = body {
             query = query.with_body(&body);
         }
 
@@ -54,24 +60,37 @@ impl TryFrom<HashMap<String, String>> for MessageQuery {
             }
         };
 
-        for time_range in time_range {
+        if let Some(time_range) = time_range {
             query = query.with_time_range(time_range);
         }
         Ok(query.build())
     }
 }
 
+fn ids<'s, 't>(matches: &'s ArgMatches<'t>) -> Option<Vec<String>> {
+    matches
+        .values_of("id")
+        .map(|ids| ids.map(|s| s.to_string()).collect())
+}
+
+fn try_filtered(matches: &'_ ArgMatches<'_>) -> Result<FilteredQuery, Error> {
+    let mut h: HashMap<String, String> = HashMap::new();
+    for (k, v) in matches.args.iter() {
+        if !v.vals.is_empty() {
+            //TODO: is there a safer way to convert OsString to String?
+            h.insert(k.to_string(), v.vals[0].clone().into_string().unwrap());
+        }
+    }
+    TryFrom::try_from(h)
+}
+
 impl<'s, 't> TryFrom<&'s ArgMatches<'t>> for MessageQuery {
     type Err = Error;
     fn try_from(matches: &'s ArgMatches<'t>) -> Result<Self, Error> {
-        let mut h: HashMap<String, String> = HashMap::new();
-        for (k, v) in matches.args.iter() {
-            if v.vals.len() > 0 {
-                //TODO: is there a safer way to convert OsString to String?
-                h.insert(k.to_string(), v.vals[0].clone().into_string().unwrap());
-            }
-        }
-        TryFrom::try_from(h)
+        ids(matches)
+            .map(MessageQuery::Ids)
+            .ok_or_else(|| format_err!("Couldn't parse id"))
+            .or_else(|_| try_filtered(matches).map(MessageQuery::Filtered))
     }
 }
 
@@ -88,7 +107,7 @@ fn merge(a: &mut Value, b: &Value) {
     }
 }
 
-impl MessageQuery {
+impl FilteredQuery {
     pub fn as_json(&self, es_major_version: Option<u8>) -> Value {
         let mut nested: Vec<Value> = Vec::new();
 
@@ -142,7 +161,7 @@ impl MessageQuery {
             let es_fmt = "yyyy-MM-dd HH:mm:ss";
             let filter = match time_range {
                 TimeRange::Within(start, end) => json!({
-                    "gte": start.format(fmt).to_string(), 
+                    "gte": start.format(fmt).to_string(),
                     "lte": end.format(fmt).to_string(),
                     "format": es_fmt
                 }),
@@ -164,7 +183,7 @@ impl MessageQuery {
         }
 
         let mut obj = json!({
-            "from": self.from, 
+            "from": self.from,
             "size": 25,
             "query": {
                  "bool": {
@@ -177,19 +196,19 @@ impl MessageQuery {
             merge(
                 &mut obj,
                 &json!({"aggs": {
-                       "message": {
-                          "nested" : {
-                              "path" : "message"
-                          },
-                          "aggs": {
-                          	"exchange": {
-                          		"terms": { "field": "message.exchange" }
-                          	},
-                          	"routing_key": {
-                          		"terms": { "field": "message.routing_key" }
-                          	}
-                          }
-                       }}}),
+                "message": {
+                   "nested" : {
+                       "path" : "message"
+                   },
+                   "aggs": {
+                       "exchange": {
+                           "terms": { "field": "message.exchange" }
+                       },
+                       "routing_key": {
+                           "terms": { "field": "message.routing_key" }
+                       }
+                   }
+                }}}),
             );
         }
 
@@ -200,13 +219,13 @@ impl MessageQuery {
 }
 
 pub struct MessageQueryBuilder {
-    query: MessageQuery,
+    query: FilteredQuery,
 }
 
 impl Default for MessageQueryBuilder {
     fn default() -> Self {
         MessageQueryBuilder {
-            query: MessageQuery {
+            query: FilteredQuery {
                 exchange: None,
                 body: None,
                 routing_key: None,
@@ -250,7 +269,7 @@ impl MessageQueryBuilder {
         self
     }
 
-    pub fn build(self) -> MessageQuery {
+    pub fn build(self) -> FilteredQuery {
         self.query
     }
 }

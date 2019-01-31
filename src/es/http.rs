@@ -11,7 +11,7 @@ use serde_json;
 use serde::de::DeserializeOwned;
 
 fn http_err<A: DeserializeOwned + Send + 'static>(
-    status: &StatusCode,
+    status: StatusCode,
     body: &Chunk,
 ) -> Result<A, Error> {
     let body = String::from_utf8_lossy(&body.to_vec()).to_string();
@@ -28,7 +28,7 @@ pub fn expect_ok(
 ) -> Box<Future<Item = (), Error = Error> + Send> {
     handle_response(client, req, |status_code, s| match status_code {
         _ if status_code.is_success() => Ok(()),
-        _ => http_err(&status_code, &s),
+        _ => http_err(status_code, &s),
     })
 }
 
@@ -44,11 +44,9 @@ pub fn expect_option<A: DeserializeOwned + Send + 'static>(
     req: Request<Body>,
 ) -> Box<Future<Item = Option<A>, Error = Error> + Send> {
     handle_response(client, req, |status_code, s| match status_code {
-        _ if status_code.is_success() => serde_json::from_slice(s)
-            .map(|a| Some(a))
-            .map_err(|e| e.into()),
+        _ if status_code.is_success() => serde_json::from_slice(s).map(Some).map_err(|e| e.into()),
         _ if status_code.as_u16() == 404 => Ok(None),
-        _ => http_err(&status_code, &s),
+        _ => http_err(status_code, &s),
     })
 }
 
@@ -58,7 +56,7 @@ pub fn expect<A: DeserializeOwned + Send + 'static>(
 ) -> Box<Future<Item = A, Error = Error> + Send> {
     handle_response(client, req, |status_code, s| match status_code {
         _ if status_code.is_success() => serde_json::from_slice(s).map_err(|e| e.into()),
-        _ => http_err(&status_code, &s),
+        _ => http_err(status_code, &s),
     })
 }
 
@@ -69,7 +67,7 @@ fn handle_response<A, F>(
 ) -> Box<Future<Item = A, Error = Error> + Send>
 where
     A: DeserializeOwned + Send + 'static,
-    F: Fn(&StatusCode, &Chunk) -> Result<A, Error> + Send + Sync + 'static,
+    F: Fn(StatusCode, &Chunk) -> Result<A, Error> + Send + Sync + 'static,
 {
     Box::new(
         client
@@ -79,7 +77,8 @@ where
                 res.into_body()
                     .concat2()
                     .map(move |chunks| (status, chunks))
-            }).map_err(|e| e.into())
-            .and_then(move |(status, body)| handle_body(&status, &body)),
+            })
+            .map_err(|e| e.into())
+            .and_then(move |(status, body)| handle_body(status, &body)),
     )
 }

@@ -1,22 +1,21 @@
+use crate::es::StoredMessage;
+use crate::lapin::channel::Channel;
+use crate::lapin::channel::{
+    BasicConsumeOptions, BasicProperties, BasicPublishOptions, ConfirmSelectOptions,
+    QueueBindOptions, QueueDeclareOptions,
+};
+use crate::lapin::client;
+use crate::lapin::client::ConnectionOptions;
+use crate::lapin::message::Delivery;
+use crate::lapin::types::*;
 use chrono::prelude::*;
 use clap::ArgMatches;
-use es::StoredMessage;
 use failure::Error;
 use futures::future::Future;
 use futures::sync::mpsc::Sender;
 use futures::{future, IntoFuture, Sink, Stream};
-use lapin::channel::Channel;
-use lapin::channel::{
-    BasicConsumeOptions, BasicProperties, BasicPublishOptions, ConfirmSelectOptions,
-    QueueBindOptions, QueueDeclareOptions,
-};
-use lapin::client;
-use lapin::client::ConnectionOptions;
-use lapin::message::Delivery;
-use lapin::types::*;
 use serde_json;
 use std::collections::BTreeMap;
-use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::str;
 use tokio;
@@ -66,37 +65,37 @@ impl Message {
         if !headers.is_empty() {
             props = props.with_headers(headers);
         }
-        for content_type in properties.content_type {
+        if let Some(content_type) = properties.content_type {
             props = props.with_content_type(content_type);
         }
-        for content_encoding in properties.content_encoding {
+        if let Some(content_encoding) = properties.content_encoding {
             props = props.with_content_encoding(content_encoding);
         }
-        for delivery_mode in properties.delivery_mode {
+        if let Some(delivery_mode) = properties.delivery_mode {
             props = props.with_delivery_mode(delivery_mode);
         }
-        for correlation_id in properties.correlation_id {
+        if let Some(correlation_id) = properties.correlation_id {
             props = props.with_correlation_id(correlation_id);
         }
-        for reply_to in properties.reply_to {
+        if let Some(reply_to) = properties.reply_to {
             props = props.with_reply_to(reply_to);
         }
-        for expiration in properties.expiration {
+        if let Some(expiration) = properties.expiration {
             props = props.with_expiration(expiration);
         }
-        for message_id in properties.message_id {
+        if let Some(message_id) = properties.message_id {
             props = props.with_message_id(message_id);
         }
-        for timestamp in properties.timestamp {
+        if let Some(timestamp) = properties.timestamp {
             props = props.with_timestamp(timestamp);
         }
-        for user_id in properties.user_id {
+        if let Some(user_id) = properties.user_id {
             props = props.with_user_id(user_id);
         }
-        for app_id in properties.app_id {
+        if let Some(app_id) = properties.app_id {
             props = props.with_app_id(app_id);
         }
-        for cluster_id in properties.cluster_id {
+        if let Some(cluster_id) = properties.cluster_id {
             props = props.with_cluster_id(cluster_id);
         }
         props
@@ -144,7 +143,7 @@ impl Default for Properties {
     }
 }
 
-fn amqp_str(ref v: &AMQPValue) -> Option<String> {
+fn amqp_str(v: &AMQPValue) -> Option<String> {
     match v {
         AMQPValue::LongString(s) => Some(s.to_string()),
         _ => None,
@@ -218,13 +217,13 @@ impl From<Delivery> for Message {
         };
 
         Message {
-            routing_key: routing_key,
-            routed_queues: routed_queues,
+            routing_key,
+            routed_queues,
             exchange: d.routing_key,
             redelivered: d.redelivered,
             body: str::from_utf8(&d.data).unwrap().to_string(),
-            node: node,
-            properties: properties,
+            node,
+            properties,
             headers: AMQPValue::FieldTable(prop_headers),
         }
     }
@@ -306,7 +305,7 @@ impl Default for Config {
 
 fn setup_channel(
     config: Config,
-) -> Box<Future<Item = Channel<TcpStream>, Error = io::Error> + Send> {
+) -> Box<Future<Item = Channel<TcpStream>, Error = failure::Error> + Send + 'static> {
     let defaults = ConnectionOptions::default();
     let (username, password) = config
         .creds
@@ -317,19 +316,28 @@ fn setup_channel(
     let connection_opts = ConnectionOptions {
         frame_max: 65535,
         heartbeat: 20,
-        username: username,
-        password: password,
+        username,
+        password,
         ..defaults
     };
+    //TODO: do we have to convert the error at each step?
     Box::new(
         TcpStream::connect(&config.address())
-            .and_then(|stream| client::Client::connect(stream, connection_opts))
+            .map_err(Error::from)
+            .and_then(|stream| {
+                client::Client::connect(stream, connection_opts).map_err(Error::from)
+            })
             .and_then(|(client, heartbeat)| {
                 tokio::spawn(heartbeat.map_err(|e| eprintln!("heartbeat error: {:?}", e)))
                     .into_future()
                     .map(|_| client)
-                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "spawn error"))
-            }).and_then(|client| client.create_confirm_channel(ConfirmSelectOptions::default())),
+                    .map_err(|_| failure::err_msg("spawn error"))
+            })
+            .and_then(|client| {
+                client
+                    .create_confirm_channel(ConfirmSelectOptions::default())
+                    .map_err(Error::from)
+            }),
     )
 }
 
@@ -338,42 +346,42 @@ pub fn publish<I>(
     exchange: String,
     routing_key: Option<String>,
     stored_msgs: I,
-) -> Box<Future<Item = (), Error = Error> + Send>
+) -> Box<Future<Item = (), Error = failure::Error> + Send + 'static>
 where
     I: IntoIterator<Item = StoredMessage> + Send + 'static,
 {
-    Box::new(
-        setup_channel(config)
-            .and_then(move |channel| {
-                let routing_key = routing_key.unwrap_or("#".to_string());
+    Box::new(setup_channel(config).and_then(move |channel| {
+        let routing_key = routing_key.unwrap_or("#".to_string());
 
-                future::join_all(stored_msgs.into_iter().map(move |stored| {
-                    debug!(
-                        "replaying message: {:#?} to exchange: {:?} with routing key: {:?}",
-                        stored, exchange, routing_key
-                    );
-                    let is_replayed = true;
-                    let basic_properties = stored.message.basic_properties(is_replayed);
-                    let msg_body = stored.message.body.into_bytes();
-                    channel
-                        .basic_publish(
-                            &exchange,
-                            &routing_key,
-                            msg_body,
-                            BasicPublishOptions::default(),
-                            basic_properties,
-                        ).map(|confirmation| {
-                            debug!("got confirmation of publication: {:?}", confirmation);
-                        })
-                })).map(|_| ())
-            }).map_err(|e| e.into()),
-    )
+        future::join_all(stored_msgs.into_iter().map(move |stored| {
+            debug!(
+                "replaying message: {:#?} to exchange: {:?} with routing key: {:?}",
+                stored, exchange, routing_key
+            );
+            let is_replayed = true;
+            let basic_properties = stored.message.basic_properties(is_replayed);
+            let msg_body = stored.message.body.into_bytes();
+            channel
+                .basic_publish(
+                    &exchange,
+                    &routing_key,
+                    msg_body,
+                    BasicPublishOptions::default(),
+                    basic_properties,
+                )
+                .map(|confirmation| {
+                    debug!("got confirmation of publication: {:?}", confirmation);
+                })
+        }))
+        .map_err(Error::from)
+        .map(|_| ())
+    }))
 }
 
 pub fn bind_and_consume(
     config: Config,
     tx: Sender<TimestampedMessage>,
-) -> Box<Future<Item = (), Error = io::Error> + Send> {
+) -> Box<Future<Item = (), Error = failure::Error> + Send> {
     let mut tx = tx.clone().wait();
     let queue_name = config.queue_name.clone();
     let exchange = config.exchange.clone();
@@ -387,7 +395,8 @@ pub fn bind_and_consume(
                 &queue_name,
                 QueueDeclareOptions::default(),
                 FieldTable::default(),
-            ).and_then(move |queue| {
+            )
+            .and_then(move |queue| {
                 info!("channel {} declared queue {}", id, &queue_name);
                 channel
                     .queue_bind(
@@ -396,7 +405,8 @@ pub fn bind_and_consume(
                         "#",
                         QueueBindOptions::default(),
                         FieldTable::default(),
-                    ).map(move |_| (channel, queue))
+                    )
+                    .map(move |_| (channel, queue))
                     .and_then(move |(channel, queue)| {
                         info!("creating consumer");
                         channel
@@ -405,8 +415,10 @@ pub fn bind_and_consume(
                                 "",
                                 BasicConsumeOptions::default(),
                                 FieldTable::new(),
-                            ).map(move |stream| (channel, stream))
-                    }).and_then(move |(channel, stream)| {
+                            )
+                            .map(move |stream| (channel, stream))
+                    })
+                    .and_then(move |(channel, stream)| {
                         stream.for_each(move |delivery| {
                             let tag = delivery.delivery_tag.clone();
                             debug!("got message: {:?}", delivery);
@@ -421,5 +433,6 @@ pub fn bind_and_consume(
                         })
                     })
             })
+            .map_err(Error::from)
     }))
 }

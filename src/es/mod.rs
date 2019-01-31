@@ -1,3 +1,4 @@
+use crate::rmq::{Message, TimestampedMessage};
 use chrono::prelude::*;
 use clap::ArgMatches;
 use failure::Error;
@@ -5,18 +6,19 @@ use futures::stream;
 use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
 use hyper::{header, Body, Client, Method, Request};
-use rmq::{Message, TimestampedMessage};
 use serde_json;
 use std::boxed::Box;
 use std::sync::Arc;
 use url::{ParseError, Url};
 
 mod http;
-mod query;
+pub mod query;
+
+use self::query::MessageQuery;
 
 pub type Task = Box<Future<Item = (), Error = Error> + Send>;
 pub type IoFuture<A> = Box<Future<Item = A, Error = Error> + Send>;
-pub type MessageQuery = query::MessageQuery;
+pub type FilteredQuery = query::FilteredQuery;
 pub type MessageQueryBuilder = query::MessageQueryBuilder;
 
 #[derive(Debug, Clone)]
@@ -117,6 +119,25 @@ pub struct EsResult<A> {
     pub aggregations: Option<EsAggregations>,
 }
 
+impl From<Vec<(String, TimestampedMessage)>> for EsResult<TimestampedMessage> {
+    fn from(msgs: Vec<(String, TimestampedMessage)>) -> Self {
+        let hits = EsHits {
+            total: msgs.len(),
+            hits: msgs
+                .into_iter()
+                .map(|(id, msg)| EsDoc {
+                    _id: id,
+                    _source: msg,
+                })
+                .collect(),
+        };
+        EsResult {
+            hits,
+            aggregations: None,
+        }
+    }
+}
+
 impl Into<Vec<StoredMessage>> for EsResult<TimestampedMessage> {
     fn into(self) -> Vec<StoredMessage> {
         info!("found {} results", self.hits.total);
@@ -128,7 +149,8 @@ impl Into<Vec<StoredMessage>> for EsResult<TimestampedMessage> {
                 received_at: es_doc._source.received_at,
                 replayed: es_doc._source.replayed,
                 message: es_doc._source.message,
-            }).collect()
+            })
+            .collect()
     }
 }
 
@@ -203,10 +225,7 @@ impl EsEndpoints for Config {
 pub trait MessageSearchService {
     fn write(&self, rx: Receiver<TimestampedMessage>) -> Task;
     fn init_store(&self) -> Task;
-    fn search(&self, query: query::MessageQuery) -> IoFuture<EsResult<TimestampedMessage>>;
-
-    //NOTE: this might be obsolete
-    fn message_for(&self, id: String) -> IoFuture<Option<StoredMessage>>;
+    fn search(&self, query: MessageQuery) -> IoFuture<EsResult<TimestampedMessage>>;
 }
 
 #[derive(Clone)]
@@ -257,9 +276,9 @@ impl MessageStore {
         let es_field = move |field_type: &str| {
             if config.es_major_version == Some(2 as u8) {
                 json!({
-                   "type": field_type,
-                   "index": "not_analyzed",
-               })
+                    "type": field_type,
+                    "index": "not_analyzed",
+                })
             } else {
                 let field_type = if field_type == "string" {
                     "keyword"
@@ -268,8 +287,8 @@ impl MessageStore {
                 };
 
                 json!({
-                   "type": field_type,
-               })
+                    "type": field_type,
+                })
             }
         };
 
@@ -282,24 +301,24 @@ impl MessageStore {
 
         Box::new(http::expect_ok(&client, req).and_then(move |_| {
             let mappings: serde_json::Value = json!({
-                "properties": {
-                    "replayed": es_field("boolean"),
-                    "received_at": es_field("date"),
-                    "message": {
-                        "type": "nested",
-                        "properties": {
-                            "exchange": es_field("string"),
-                            "routing_key": es_field("string"),
-                            "redelivered": es_field("boolean"),
-                            "uuid": es_field("string"),
-                            "headers": {
-                                "type": "object",
-                                "enabled": "false"
-                            }
-                        }
-                    }
-                }
-              });
+              "properties": {
+                  "replayed": es_field("boolean"),
+                  "received_at": es_field("date"),
+                  "message": {
+                      "type": "nested",
+                      "properties": {
+                          "exchange": es_field("string"),
+                          "routing_key": es_field("string"),
+                          "redelivered": es_field("boolean"),
+                          "uuid": es_field("string"),
+                          "headers": {
+                              "type": "object",
+                              "enabled": "false"
+                          }
+                      }
+                  }
+              }
+            });
 
             let req = Request::builder()
                 .method(Method::PUT)
@@ -307,7 +326,8 @@ impl MessageStore {
                 .uri(mappings_url.to_string())
                 .body(Body::wrap_stream(stream::once(serde_json::to_string(
                     &mappings,
-                )))).expect("couldn't build a request!");
+                ))))
+                .expect("couldn't build a request!");
 
             debug!("sending request: {:?}", req);
 
@@ -364,62 +384,80 @@ impl MessageSearchService for MessageStore {
                     http::expect_ok(
                         &client,
                         req.body(body)
-                            .expect(&format!("couldn't build HTTP request {:?}", msg)),
+                            .unwrap_or_else(|_| panic!("couldn't build HTTP request {:?}", msg)),
                     )
-                }).for_each(|_| Ok(())),
+                })
+                .for_each(|_| Ok(())),
         )
     }
 
-    fn message_for(&self, id: String) -> IoFuture<Option<StoredMessage>> {
-        let client = Client::new();
-        let index_url = self.config.message_url(Some(id)).unwrap();
-        let req = Request::builder()
-            .method(Method::GET)
-            .uri(index_url.to_string())
-            .body(Body::empty())
-            .expect("couldn't build a request!");
+    fn search(&self, query: MessageQuery) -> IoFuture<EsResult<TimestampedMessage>> {
+        use futures::future;
 
-        Box::new(
-            http::expect_option::<EsDoc<StoredMessage>>(&client, req)
-                .map(|maybe_doc| maybe_doc.map(|doc| doc._source)),
-        )
-    }
-
-    fn search(&self, query: query::MessageQuery) -> IoFuture<EsResult<TimestampedMessage>> {
         let client = Client::new();
         let search_url = self.config.search_url().unwrap();
-        let json_query = query.as_json(self.config.es_major_version);
-        info!(
-            "sending ES query: {} to {:?}",
-            serde_json::to_string_pretty(&json_query).unwrap(),
-            search_url
-        );
+        let config = self.config.clone();
+        match query {
+            MessageQuery::Ids(ids) => {
+                let ids_and_urls = ids
+                    .into_iter()
+                    .map(move |id| (id.clone(), config.clone().message_url(Some(id)).unwrap()));
+                Box::new(
+                    future::join_all(ids_and_urls.map(move |(id, index_url)| {
+                        let req = Request::builder()
+                            .method(Method::GET)
+                            .uri(index_url.to_string())
+                            .body(Body::empty())
+                            .expect("couldn't build a request!");
 
-        let body = Body::wrap_stream(stream::once(serde_json::to_string(&json_query)));
-        let req = Request::builder()
-            .method(Method::POST)
-            .header(header::CONTENT_TYPE, "application/json")
-            .uri(search_url.to_string())
-            .body(body)
-            .expect("couldn't build a request!");
+                        Box::new(
+                            http::expect_option::<EsDoc<TimestampedMessage>>(&client, req)
+                                .map(|maybe_doc| (id, maybe_doc.map(|doc| doc._source))),
+                        )
+                    }))
+                    .map(|result| {
+                        let found: Vec<(String, TimestampedMessage)> = result
+                            .into_iter()
+                            .filter_map(|(id, maybe_doc)| maybe_doc.map(|doc| (id, doc)))
+                            .collect();
+                        EsResult::<TimestampedMessage>::from(found)
+                    }),
+                )
+            }
+            MessageQuery::Filtered(fq) => {
+                let json_query = fq.as_json(self.config.es_major_version);
+                info!(
+                    "sending ES query: {} to {:?}",
+                    serde_json::to_string_pretty(&json_query).unwrap(),
+                    search_url
+                );
 
-        Box::new(http::expect::<EsResult<TimestampedMessage>>(&client, req))
+                let body = Body::wrap_stream(stream::once(serde_json::to_string(&json_query)));
+                let req = Request::builder()
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .uri(search_url.to_string())
+                    .body(body)
+                    .expect("couldn't build a request!");
+
+                Box::new(http::expect::<EsResult<TimestampedMessage>>(&client, req))
+            }
+        }
     }
 }
 
 #[cfg(test)]
 pub mod test {
     extern crate env_logger;
-    use chrono::prelude::*;
-    use es::*;
+    use crate::es::*;
+    use crate::lapin::types::AMQPValue;
+    use crate::rmq::{Message, Properties};
+    use crate::TimeRange;
     use futures::Future;
     use futures::{future, stream};
     use hyper::{Body, Client, Method, Request};
-    use lapin::types::AMQPValue;
-    use rmq::{Message, Properties};
     use serde_json;
     use tokio::runtime::Runtime;
-    use TimeRange;
 
     fn reset_store(config: Config) -> IoFuture<MessageStore> {
         let client = Client::new();
@@ -474,7 +512,8 @@ pub mod test {
                     .expect("couldn't build a request!");
 
                 http::expect_ok(&client, req)
-            })).and_then(move |_| {
+            }))
+            .and_then(move |_| {
                 let client = Client::new();
                 let req = Request::builder()
                     .uri(flush_url.to_string())
@@ -484,7 +523,8 @@ pub mod test {
                     .expect("couldn't build a request!");
 
                 http::expect_ok(&client, req)
-            }).map(|_| store)
+            })
+            .map(|_| store)
         }))
     }
 
@@ -563,7 +603,7 @@ pub mod test {
     }
 
     fn assert_search_result_include(
-        q: MessageQuery,
+        q: FilteredQuery,
         in_store: Vec<StoredMessage>,
         expected_idx: Vec<usize>,
     ) {
@@ -577,7 +617,7 @@ pub mod test {
 
         let mut msgs_found: Vec<Message> = {
             let es_result = rt
-                .block_on(store.search(q))
+                .block_on(store.search(MessageQuery::Filtered(q)))
                 .expect("search result expected");
             let stored_msgs: Vec<StoredMessage> = es_result.into();
 

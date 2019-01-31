@@ -50,7 +50,7 @@ fn convert(s: String) -> Result<DateTime<Utc>, TimeRangeError> {
 impl TryFrom<(Option<String>, Option<String>)> for TimeRange {
     type Err = TimeRangeError;
     fn try_from(pair: (Option<String>, Option<String>)) -> Result<Self, TimeRangeError> {
-        use TimeRangeError::*;
+        use crate::TimeRangeError::*;
         match pair {
             (Some(d1), Some(d2)) => {
                 let d1 = convert(d1)?;
