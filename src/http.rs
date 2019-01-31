@@ -1,7 +1,7 @@
 use futures::{future, Future};
 
-use es::query::MessageQuery;
-use es::{FilteredQuery, MessageSearchService, MessageStore};
+use crate::es::query::MessageQuery;
+use crate::es::{FilteredQuery, MessageSearchService, MessageStore};
 use hyper::error::Error;
 use hyper::{header, Body, Method, Request, Response, StatusCode};
 use serde_json;

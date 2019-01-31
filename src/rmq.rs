@@ -1,19 +1,19 @@
+use crate::es::StoredMessage;
+use crate::lapin::channel::Channel;
+use crate::lapin::channel::{
+    BasicConsumeOptions, BasicProperties, BasicPublishOptions, ConfirmSelectOptions,
+    QueueBindOptions, QueueDeclareOptions,
+};
+use crate::lapin::client;
+use crate::lapin::client::ConnectionOptions;
+use crate::lapin::message::Delivery;
+use crate::lapin::types::*;
 use chrono::prelude::*;
 use clap::ArgMatches;
-use es::StoredMessage;
 use failure::Error;
 use futures::future::Future;
 use futures::sync::mpsc::Sender;
 use futures::{future, IntoFuture, Sink, Stream};
-use lapin::channel::Channel;
-use lapin::channel::{
-    BasicConsumeOptions, BasicProperties, BasicPublishOptions, ConfirmSelectOptions,
-    QueueBindOptions, QueueDeclareOptions,
-};
-use lapin::client;
-use lapin::client::ConnectionOptions;
-use lapin::message::Delivery;
-use lapin::types::*;
 use serde_json;
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -65,37 +65,37 @@ impl Message {
         if !headers.is_empty() {
             props = props.with_headers(headers);
         }
-        for content_type in properties.content_type {
+        if let Some(content_type) = properties.content_type {
             props = props.with_content_type(content_type);
         }
-        for content_encoding in properties.content_encoding {
+        if let Some(content_encoding) = properties.content_encoding {
             props = props.with_content_encoding(content_encoding);
         }
-        for delivery_mode in properties.delivery_mode {
+        if let Some(delivery_mode) = properties.delivery_mode {
             props = props.with_delivery_mode(delivery_mode);
         }
-        for correlation_id in properties.correlation_id {
+        if let Some(correlation_id) = properties.correlation_id {
             props = props.with_correlation_id(correlation_id);
         }
-        for reply_to in properties.reply_to {
+        if let Some(reply_to) = properties.reply_to {
             props = props.with_reply_to(reply_to);
         }
-        for expiration in properties.expiration {
+        if let Some(expiration) = properties.expiration {
             props = props.with_expiration(expiration);
         }
-        for message_id in properties.message_id {
+        if let Some(message_id) = properties.message_id {
             props = props.with_message_id(message_id);
         }
-        for timestamp in properties.timestamp {
+        if let Some(timestamp) = properties.timestamp {
             props = props.with_timestamp(timestamp);
         }
-        for user_id in properties.user_id {
+        if let Some(user_id) = properties.user_id {
             props = props.with_user_id(user_id);
         }
-        for app_id in properties.app_id {
+        if let Some(app_id) = properties.app_id {
             props = props.with_app_id(app_id);
         }
-        for cluster_id in properties.cluster_id {
+        if let Some(cluster_id) = properties.cluster_id {
             props = props.with_cluster_id(cluster_id);
         }
         props
@@ -143,7 +143,7 @@ impl Default for Properties {
     }
 }
 
-fn amqp_str(ref v: &AMQPValue) -> Option<String> {
+fn amqp_str(v: &AMQPValue) -> Option<String> {
     match v {
         AMQPValue::LongString(s) => Some(s.to_string()),
         _ => None,
@@ -217,13 +217,13 @@ impl From<Delivery> for Message {
         };
 
         Message {
-            routing_key: routing_key,
-            routed_queues: routed_queues,
+            routing_key,
+            routed_queues,
             exchange: d.routing_key,
             redelivered: d.redelivered,
             body: str::from_utf8(&d.data).unwrap().to_string(),
-            node: node,
-            properties: properties,
+            node,
+            properties,
             headers: AMQPValue::FieldTable(prop_headers),
         }
     }
@@ -316,8 +316,8 @@ fn setup_channel(
     let connection_opts = ConnectionOptions {
         frame_max: 65535,
         heartbeat: 20,
-        username: username,
-        password: password,
+        username,
+        password,
         ..defaults
     };
     //TODO: do we have to convert the error at each step?

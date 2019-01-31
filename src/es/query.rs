@@ -1,13 +1,13 @@
 //TODO: consider using nightly
 extern crate try_from;
 
+use crate::TimeRange;
+use crate::TimeRangeError;
 use clap::ArgMatches;
 use failure::Error;
 use serde_json::Value;
 use std::collections::HashMap;
 use try_from::TryFrom;
-use TimeRange;
-use TimeRangeError;
 
 #[derive(Debug)]
 pub struct FilteredQuery {
@@ -38,15 +38,15 @@ impl TryFrom<HashMap<String, String>> for FilteredQuery {
 
         let mut query = MessageQueryBuilder::default();
 
-        for each in exchange {
-            query = query.with_exchange(&each);
+        if let Some(exchange) = exchange {
+            query = query.with_exchange(&exchange);
         }
 
-        for key in routing_key {
-            query = query.with_routing_key(&key);
+        if let Some(routing_key) = routing_key {
+            query = query.with_routing_key(&routing_key);
         }
 
-        for body in body {
+        if let Some(body) = body {
             query = query.with_body(&body);
         }
 
@@ -60,7 +60,7 @@ impl TryFrom<HashMap<String, String>> for FilteredQuery {
             }
         };
 
-        for time_range in time_range {
+        if let Some(time_range) = time_range {
             query = query.with_time_range(time_range);
         }
         Ok(query.build())
@@ -73,10 +73,10 @@ fn ids<'s, 't>(matches: &'s ArgMatches<'t>) -> Option<Vec<String>> {
         .map(|ids| ids.map(|s| s.to_string()).collect())
 }
 
-fn try_filtered<'s, 't>(matches: &'s ArgMatches<'t>) -> Result<FilteredQuery, Error> {
+fn try_filtered(matches: &'_ ArgMatches<'_>) -> Result<FilteredQuery, Error> {
     let mut h: HashMap<String, String> = HashMap::new();
     for (k, v) in matches.args.iter() {
-        if v.vals.len() > 0 {
+        if !v.vals.is_empty() {
             //TODO: is there a safer way to convert OsString to String?
             h.insert(k.to_string(), v.vals[0].clone().into_string().unwrap());
         }
@@ -88,9 +88,9 @@ impl<'s, 't> TryFrom<&'s ArgMatches<'t>> for MessageQuery {
     type Err = Error;
     fn try_from(matches: &'s ArgMatches<'t>) -> Result<Self, Error> {
         ids(matches)
-            .map(|ids| MessageQuery::Ids(ids))
-            .ok_or(format_err!("Couldn't parse id"))
-            .or(try_filtered(matches).map(|fq| MessageQuery::Filtered(fq)))
+            .map(MessageQuery::Ids)
+            .ok_or_else(|| format_err!("Couldn't parse id"))
+            .or_else(|_| try_filtered(matches).map(MessageQuery::Filtered))
     }
 }
 

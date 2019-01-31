@@ -331,7 +331,7 @@ fn main() {
         Some("export") => {
             let matches = matches.subcommand_matches("export").unwrap();
 
-            let target: PathBuf = matches.value_of_os("target").unwrap().clone().into();
+            let target: PathBuf = (*matches.value_of_os("target").unwrap()).into();
             let pretty_print = matches.occurrences_of("pretty-print") > 0;
             let force = matches.occurrences_of("force") > 0;
 

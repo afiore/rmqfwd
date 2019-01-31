@@ -1,3 +1,4 @@
+use crate::rmq::{Message, TimestampedMessage};
 use chrono::prelude::*;
 use clap::ArgMatches;
 use failure::Error;
@@ -5,7 +6,6 @@ use futures::stream;
 use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
 use hyper::{header, Body, Client, Method, Request};
-use rmq::{Message, TimestampedMessage};
 use serde_json;
 use std::boxed::Box;
 use std::sync::Arc;
@@ -127,12 +127,12 @@ impl From<Vec<(String, TimestampedMessage)>> for EsResult<TimestampedMessage> {
                 .into_iter()
                 .map(|(id, msg)| EsDoc {
                     _id: id,
-                    _source: msg.into(),
+                    _source: msg,
                 })
                 .collect(),
         };
         EsResult {
-            hits: hits,
+            hits,
             aggregations: None,
         }
     }
@@ -384,7 +384,7 @@ impl MessageSearchService for MessageStore {
                     http::expect_ok(
                         &client,
                         req.body(body)
-                            .expect(&format!("couldn't build HTTP request {:?}", msg)),
+                            .unwrap_or_else(|_| panic!("couldn't build HTTP request {:?}", msg)),
                     )
                 })
                 .for_each(|_| Ok(())),
@@ -449,16 +449,15 @@ impl MessageSearchService for MessageStore {
 #[cfg(test)]
 pub mod test {
     extern crate env_logger;
-    use chrono::prelude::*;
-    use es::*;
+    use crate::es::*;
+    use crate::lapin::types::AMQPValue;
+    use crate::rmq::{Message, Properties};
+    use crate::TimeRange;
     use futures::Future;
     use futures::{future, stream};
     use hyper::{Body, Client, Method, Request};
-    use lapin::types::AMQPValue;
-    use rmq::{Message, Properties};
     use serde_json;
     use tokio::runtime::Runtime;
-    use TimeRange;
 
     fn reset_store(config: Config) -> IoFuture<MessageStore> {
         let client = Client::new();

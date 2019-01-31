@@ -1,4 +1,4 @@
-use es::StoredMessage;
+use crate::es::StoredMessage;
 use failure::Error;
 use futures::{future, Future};
 use serde_json;
@@ -23,8 +23,8 @@ pub struct Exporter {
 impl Exporter {
     pub fn new(pretty_print: bool, force: bool) -> Self {
         Exporter {
-            pretty_print: pretty_print,
-            force: force,
+            pretty_print,
+            force,
         }
     }
 }
@@ -36,8 +36,8 @@ impl Export for Exporter {
         target: PathBuf,
     ) -> Box<Future<Item = (), Error = Error> + Send> {
         let pretty_print = self.pretty_print;
-        let force1 = self.force.clone();
-        let force2 = self.force.clone();
+        let force1 = self.force;
+        let force2 = self.force;
 
         debug!("exporter: {:?}", self);
 
@@ -51,7 +51,7 @@ impl Export for Exporter {
                 read_dir(target.clone())
                     .map_err(|e| e.into())
                     .and_then(|mut entries| {
-                        if let Some(_) = entries.next() {
+                        if entries.next().is_some() {
                             if force1 {
                                 warn!("removing and re-creating target dir: {:?}", target.clone());
                                 remove_dir_all(target.clone())
@@ -82,10 +82,12 @@ impl Export for Exporter {
                         } else {
                             Ok(target)
                         }
-                    }).and_then(|target| {
+                    })
+                    .and_then(|target| {
                         info!("exporting {:?}", target.display());
                         File::create(target).from_err()
-                    }).and_then(move |file| {
+                    })
+                    .and_then(move |file| {
                         let result = if pretty_print {
                             serde_json::to_writer_pretty(file, &msg)
                         } else {
@@ -94,11 +96,12 @@ impl Export for Exporter {
 
                         result.map_err(|e| e.into())
                     })
-                })).map(|_| ()),
+                }))
+                .map(|_| ()),
             )
         };
 
-        Box::new(setup_target.and_then(|target| run_export(target.into())))
+        Box::new(setup_target.and_then(run_export))
     }
 }
 
@@ -106,10 +109,10 @@ impl Export for Exporter {
 mod test {
     extern crate tempdir;
     use self::tempdir::TempDir;
-    use es::test::MessageBuilder;
-    use es::StoredMessage;
+    use crate::es::test::MessageBuilder;
+    use crate::es::StoredMessage;
+    use crate::fs::*;
     use failure::Error;
-    use fs::*;
     use std::fs::File;
     use std::path::PathBuf;
     use tokio::runtime::Runtime;
