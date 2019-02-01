@@ -11,7 +11,9 @@ stdenv.mkDerivation {
       jq
       psmisc
       git
-      #gitAndTools.hub
+      gnused
+      coreutils
+      gitAndTools.hub
     ];
 
     RUST_LOG="warn";

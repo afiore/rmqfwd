@@ -283,7 +283,7 @@ fn main() {
             .subcommand(
                 SubCommand
                 ::with_name("replay") //TODO: rename to republish
-                    .about("Reublish a subset of the messages present in the data store to an arbitrary exchange")
+                    .about("Republish a subset of the messages present in the data store to an arbitrary exchange")
                     .args(arg::common::with(vec![
                                             arg::common::ids(),
                                             arg::common::since(), arg::common::until(),
