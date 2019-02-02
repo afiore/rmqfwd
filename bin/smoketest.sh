@@ -1,4 +1,4 @@
-set -e
+set -e -x
 
 rmq_username=test_user
 rmq_password=test_password

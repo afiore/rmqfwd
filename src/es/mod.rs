@@ -247,8 +247,8 @@ impl MessageStore {
 
         Box::new(http::expect::<EsCluster>(&client, req).map(move |cluster| {
             let version_number = cluster.version.number;
-            let major_min_bugfix = version_number.split('.');
-            match major_min_bugfix.into_iter().next().map(|s| s.parse::<u8>().expect("expected es-major-version to be an integer")) {
+            let mut major_min_bugfix = version_number.split('.');
+            match major_min_bugfix.next().map(|s| s.parse::<u8>().expect("expected es-major-version to be an integer")) {
                 Some(n) if n == 2 || n == 6 => {
                     debug!("Supported Elasticsearch major version detected: {}", n);
                     config.es_major_version = Some(n);
@@ -304,18 +304,19 @@ impl MessageStore {
               "properties": {
                   "replayed": es_field("boolean"),
                   "received_at": es_field("date"),
-                  "message": {
-                      "type": "nested",
-                      "properties": {
-                          "exchange": es_field("string"),
-                          "routing_key": es_field("string"),
-                          "redelivered": es_field("boolean"),
-                          "uuid": es_field("string"),
-                          "headers": {
-                              "type": "object",
-                              "enabled": "false"
-                          }
-                      }
+                  "redelivered": es_field("boolean"),
+                  "routing_key": es_field("string"),
+                  "exchange": es_field("string"),
+                  "node": es_field("string"),
+                  //TODO: add routed_queues
+                  "uuid": es_field("string"),
+                  "properties": {
+                      "type": "object",
+                      "enabled": "false"
+                  },
+                  "headers": {
+                      "type": "object",
+                      "enabled": "false"
                   }
               }
             });

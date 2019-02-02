@@ -27,6 +27,7 @@ const REPLAYED_HEADER: &str = "X-Replayed";
 pub struct TimestampedMessage {
     pub received_at: DateTime<Utc>,
     pub replayed: bool,
+    #[serde(flatten)]
     pub message: Message,
 }
 
@@ -102,8 +103,7 @@ impl Message {
     }
 
     pub fn is_replayed(&self) -> bool {
-        let headers = amqp_field_table(&self.headers);
-        headers.contains_key(REPLAYED_HEADER)
+        amqp_field_table(&self.headers).contains_key(REPLAYED_HEADER)
     }
 }
 
@@ -164,9 +164,9 @@ fn amqp_u64(v: &AMQPValue) -> Option<u64> {
     }
 }
 
-fn amqp_str_array(ref v: AMQPValue) -> Vec<String> {
+fn amqp_str_array(v: &AMQPValue) -> Vec<String> {
     match v {
-        AMQPValue::FieldArray(vs) => vs.into_iter().filter_map(amqp_str).collect(),
+        AMQPValue::FieldArray(vs) => vs.iter().filter_map(amqp_str).collect(),
         _ => Vec::new(),
     }
 }
@@ -185,10 +185,10 @@ impl From<Delivery> for Message {
         let node = headers.remove("node").and_then(|n| amqp_str(&n));
         let routing_key = headers
             .remove("routing_keys")
-            .and_then(|rk| amqp_str_array(rk).into_iter().next());
+            .and_then(|rk| amqp_str_array(&rk).into_iter().next());
         let routed_queues = headers
             .remove("routed_queues")
-            .map(amqp_str_array)
+            .map(|q| amqp_str_array(&q))
             .unwrap_or_else(Vec::new);
 
         info!("message headers: {:#?}", headers);
@@ -249,7 +249,7 @@ impl Config {
         let host_port = format!("{}:{}", self.host, self.port);
         host_port
             .to_socket_addrs()
-            .expect(&format!("cannot resolve {}", host_port))
+            .unwrap_or_else(|_| panic!("cannot resolve {}", host_port))
             .next()
             .unwrap()
     }
@@ -274,7 +274,7 @@ impl<'a, 'b> From<&'a ArgMatches<'b>> for Config {
         }
 
         if let Some(rmq_creds) = matches.value_of("rmq-creds") {
-            let mut creds_tokens = rmq_creds.split(":").into_iter();
+            let mut creds_tokens = rmq_creds.split(':');
 
             if let Some((user, pass)) = creds_tokens
                 .next()
@@ -351,7 +351,7 @@ where
     I: IntoIterator<Item = StoredMessage> + Send + 'static,
 {
     Box::new(setup_channel(config).and_then(move |channel| {
-        let routing_key = routing_key.unwrap_or("#".to_string());
+        let routing_key = routing_key.unwrap_or_else(|| "#".to_string());
 
         future::join_all(stored_msgs.into_iter().map(move |stored| {
             debug!(
@@ -420,14 +420,13 @@ pub fn bind_and_consume(
                     })
                     .and_then(move |(channel, stream)| {
                         stream.for_each(move |delivery| {
-                            let tag = delivery.delivery_tag.clone();
+                            let tag = delivery.delivery_tag;
                             debug!("got message: {:?}", delivery);
                             let msg = Message::from(delivery);
                             let msg_json = serde_json::to_string(&msg).unwrap();
-                            tx.send(TimestampedMessage::now(msg)).expect(&format!(
-                                "failed to send message through channel: {}",
-                                msg_json
-                            ));
+                            tx.send(TimestampedMessage::now(msg)).unwrap_or_else(|_| {
+                                panic!("failed to send message through channel: {}", msg_json)
+                            });
                             info!("got message: {}", msg_json);
                             channel.basic_ack(tag, false)
                         })

@@ -48,7 +48,8 @@ pub fn routes(
                 }
                 Ok(query) => {
                     let mut fq: FilteredQuery = query;
-                    fq.aggregate_terms = true;
+                    //TODO: re-enable
+                    fq.aggregate_terms = false;
 
                     let msg_store = msg_store.lock().unwrap();
                     Box::new(msg_store.search(MessageQuery::Filtered(fq)).then(|results| {
