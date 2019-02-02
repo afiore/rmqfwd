@@ -109,36 +109,6 @@ fn merge(a: &mut Value, b: &Value) {
 
 impl FilteredQuery {
     pub fn as_json(&self, es_major_version: Option<u8>) -> Value {
-        let mut nested: Vec<Value> = Vec::new();
-
-        for exchange in &self.exchange {
-            nested.push(json!(
-              {"match": {"message.exchange": exchange }}
-            ));
-        }
-
-        for key in &self.routing_key {
-            nested.push(json!({
-              "match": {"message.routing_key": key }
-            }));
-        }
-        for body in &self.body {
-            nested.push(json!({
-              "match": {"message.body": body }
-            }));
-        }
-
-        let nested_obj = json!({
-            "nested": {
-                "path": "message",
-                "score_mode": "avg",
-                "query": {
-                    "bool": {
-                        "must": nested
-                    }
-                }
-        }});
-
         let wrap_if_es2 = move |json: Value| {
             if Some(2) == es_major_version {
                 json!({ "query": json })
@@ -147,16 +117,31 @@ impl FilteredQuery {
             }
         };
 
-        let mut filters = vec![
-            nested_obj,
-            wrap_if_es2(json!({
-                "match": {
-                     "replayed": !self.exclude_replayed
-                 }
-            })),
-        ];
+        let mut filters = vec![wrap_if_es2(json!({
+            "match": {
+                 "replayed": !self.exclude_replayed
+             }
+        }))];
 
-        for time_range in &self.time_range {
+        if let Some(exchange) = &self.exchange {
+            filters.push(wrap_if_es2(json!(
+              {"match": {"exchange": exchange }}
+            )));
+        }
+
+        if let Some(key) = &self.routing_key {
+            filters.push(wrap_if_es2(json!({
+              "match": {"routing_key": key }
+            })));
+        }
+
+        if let Some(body) = &self.body {
+            filters.push(wrap_if_es2(json!({
+              "match": {"body": body }
+            })));
+        }
+
+        if let Some(time_range) = &self.time_range {
             let fmt = "%Y-%m-%d %H:%M:%S";
             let es_fmt = "yyyy-MM-dd HH:mm:ss";
             let filter = match time_range {
@@ -195,19 +180,18 @@ impl FilteredQuery {
         if self.aggregate_terms {
             merge(
                 &mut obj,
-                &json!({"aggs": {
-                "message": {
-                   "nested" : {
-                       "path" : "message"
-                   },
-                   "aggs": {
-                       "exchange": {
-                           "terms": { "field": "message.exchange" }
-                       },
-                       "routing_key": {
-                           "terms": { "field": "message.routing_key" }
-                       }
-                   }
+                &json!({
+                //TODO: fix
+                "aggs": {
+                  "message": {
+                     "aggs": {
+                         "exchange": {
+                             "terms": { "field": "exchange" }
+                         },
+                         "routing_key": {
+                             "terms": { "field": "routing_key" }
+                         }
+                     }
                 }}}),
             );
         }
