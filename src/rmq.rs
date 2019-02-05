@@ -9,15 +9,16 @@ use crate::lapin::client::ConnectionOptions;
 use crate::lapin::message::Delivery;
 use crate::lapin::types::*;
 use chrono::prelude::*;
-use clap::ArgMatches;
 use failure::Error;
 use futures::future::Future;
 use futures::sync::mpsc::Sender;
 use futures::{future, IntoFuture, Sink, Stream};
+use opt::RmqConfig as Config;
 use serde_json;
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::str;
+use std::str::FromStr;
 use tokio;
 use tokio::net::TcpStream;
 
@@ -37,6 +38,32 @@ impl TimestampedMessage {
             replayed: msg.is_replayed(),
             received_at: Utc::now(),
             message: msg,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UserCreds {
+    pub user: String,
+    pub password: String,
+}
+
+impl FromStr for UserCreds {
+    type Err = failure::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let tokens: Vec<&str> = s.split(':').collect();
+
+        if tokens.len() > 1 {
+            Ok(UserCreds {
+                user: tokens[0].to_string(),
+                password: tokens[1].to_string(),
+            })
+        } else {
+            Err(failure::format_err!(
+                "expected creds in the following format: `user:password`. Got {}",
+                s
+            ))
         }
     }
 }
@@ -229,78 +256,13 @@ impl From<Delivery> for Message {
     }
 }
 
-#[derive(Clone)]
-pub struct Creds {
-    pub user: String,
-    pub password: String,
-}
-
-pub struct Config {
-    pub host: String,
-    pub port: u16,
-    pub exchange: String,
-    pub queue_name: String,
-    pub creds: Option<Creds>,
-}
-
-impl Config {
-    //TODO: just use a connection string
-    fn address(&self) -> SocketAddr {
-        let host_port = format!("{}:{}", self.host, self.port);
-        host_port
-            .to_socket_addrs()
-            .unwrap_or_else(|_| panic!("cannot resolve {}", host_port))
-            .next()
-            .unwrap()
-    }
-}
-
-impl<'a, 'b> From<&'a ArgMatches<'b>> for Config {
-    fn from(matches: &'a ArgMatches<'b>) -> Config {
-        let mut config = Config::default();
-
-        if let Some(host) = matches.value_of("rmq-host") {
-            config.host = host.to_string();
-        }
-
-        if let Some(port) = matches.value_of("rmq-port") {
-            config.port = port
-                .parse::<u16>()
-                .expect("rmq-port: postive integer expected!")
-        }
-
-        if let Some(exchange) = matches.value_of("rmq-exchange") {
-            config.exchange = exchange.to_string();
-        }
-
-        if let Some(rmq_creds) = matches.value_of("rmq-creds") {
-            let mut creds_tokens = rmq_creds.split(':');
-
-            if let Some((user, pass)) = creds_tokens
-                .next()
-                .and_then(|user| creds_tokens.next().map(|pass| (user, pass)))
-            {
-                config.creds = Some(Creds {
-                    user: user.to_string(),
-                    password: pass.to_string(),
-                });
-            }
-        }
-
-        config
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            host: "127.0.0.1".to_string(),
-            port: 5672,
-            exchange: "amq.rabbitmq.trace".to_string(),
-            queue_name: "rabbit-forwarder".to_string(),
-            creds: None,
-        }
-    }
+fn address(config: Config) -> SocketAddr {
+    let host_port = format!("{}:{}", config.host, config.port);
+    host_port
+        .to_socket_addrs()
+        .unwrap_or_else(|_| panic!("cannot resolve {}", host_port))
+        .next()
+        .unwrap()
 }
 
 fn setup_channel(
@@ -322,7 +284,7 @@ fn setup_channel(
     };
     //TODO: do we have to convert the error at each step?
     Box::new(
-        TcpStream::connect(&config.address())
+        TcpStream::connect(&address(config))
             .map_err(Error::from)
             .and_then(|stream| {
                 client::Client::connect(stream, connection_opts).map_err(Error::from)
@@ -383,8 +345,8 @@ pub fn bind_and_consume(
     tx: Sender<TimestampedMessage>,
 ) -> Box<Future<Item = (), Error = failure::Error> + Send> {
     let mut tx = tx.clone().wait();
-    let queue_name = config.queue_name.clone();
-    let exchange = config.exchange.clone();
+    let queue_name = "rmqfwd"; //TODO: make configurable
+    let exchange = config.tracing_exchange.clone();
 
     Box::new(setup_channel(config).and_then(move |channel| {
         let id = channel.id;

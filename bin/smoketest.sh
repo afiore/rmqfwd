@@ -64,7 +64,7 @@ i=0
 while [ $i -lt 2 ]
 do
   echo "republishing message with uuid: ${uuids[$i]}"
-  RUST_LOG='rmqfwd=debug' $rmqfwd_bin replay $rmqfwd_common_ops -b "${uuids[$i]}" -e "publish.$exchange" --target-exchange $other_exchange --target-routing-key $routing_key
+  RUST_LOG='rmqfwd=debug' $rmqfwd_bin republish $rmqfwd_common_ops -b "${uuids[$i]}" -e "publish.$exchange" --target-exchange $other_exchange --target-routing-key $routing_key
   sleep 2
   ((i+=1))
 done
