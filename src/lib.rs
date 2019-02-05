@@ -12,6 +12,7 @@ extern crate futures;
 extern crate hyper;
 extern crate lapin_futures as lapin;
 extern crate serde;
+extern crate structopt;
 extern crate tokio;
 extern crate tokio_codec;
 extern crate try_from;
@@ -20,6 +21,7 @@ extern crate url;
 pub mod es;
 pub mod fs;
 pub mod http;
+pub mod opt;
 pub mod rmq;
 
 use chrono::prelude::*;

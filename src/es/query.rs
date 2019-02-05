@@ -3,8 +3,8 @@ extern crate try_from;
 
 use crate::TimeRange;
 use crate::TimeRangeError;
-use clap::ArgMatches;
 use failure::Error;
+use opt::Filters;
 use serde_json::Value;
 use std::collections::HashMap;
 use try_from::TryFrom;
@@ -26,31 +26,40 @@ pub enum MessageQuery {
     Ids(Vec<String>),
 }
 
-impl TryFrom<HashMap<String, String>> for FilteredQuery {
+impl TryFrom<Filters> for FilteredQuery {
     type Err = Error;
 
-    fn try_from(h: HashMap<String, String>) -> Result<Self, Error> {
-        let exchange = h.get("exchange");
-        let routing_key = h.get("routing-key").map(|s| s.to_string());
-        let body = h.get("message-body").map(|s| s.to_string());
-        let since = h.get("since").map(|s| s.to_string());
-        let until = h.get("until").map(|s| s.to_string());
+    fn try_from(f: Filters) -> Result<Self, Error> {
+        println!("getting a hashmap");
+        let hm: HashMap<String, Vec<String>> = f.into();
+        TryFrom::try_from(hm)
+    }
+}
 
+fn first_val(h: &HashMap<String, Vec<String>>, k: &str) -> Option<String> {
+    h.get(k).and_then(|v| v.iter().next().map(|s| s.to_owned()))
+}
+
+impl TryFrom<HashMap<String, Vec<String>>> for FilteredQuery {
+    type Err = Error;
+
+    fn try_from(h: HashMap<String, Vec<String>>) -> Result<Self, Error> {
         let mut query = MessageQueryBuilder::default();
 
-        if let Some(exchange) = exchange {
+        if let Some(exchange) = first_val(&h, "exchange") {
             query = query.with_exchange(&exchange);
         }
 
-        if let Some(routing_key) = routing_key {
+        if let Some(routing_key) = first_val(&h, "routing-key") {
             query = query.with_routing_key(&routing_key);
         }
 
-        if let Some(body) = body {
+        if let Some(body) = first_val(&h, "message-body") {
             query = query.with_body(&body);
         }
 
-        let time_range_result = try_from::TryFrom::try_from((since, until));
+        let time_range_result =
+            try_from::TryFrom::try_from((first_val(&h, "since"), first_val(&h, "until")));
 
         let time_range = match time_range_result {
             Ok(time_range) => Some(time_range),
@@ -67,30 +76,15 @@ impl TryFrom<HashMap<String, String>> for FilteredQuery {
     }
 }
 
-fn ids<'s, 't>(matches: &'s ArgMatches<'t>) -> Option<Vec<String>> {
-    matches
-        .values_of("id")
-        .map(|ids| ids.map(|s| s.to_string()).collect())
-}
-
-fn try_filtered(matches: &'_ ArgMatches<'_>) -> Result<FilteredQuery, Error> {
-    let mut h: HashMap<String, String> = HashMap::new();
-    for (k, v) in matches.args.iter() {
-        if !v.vals.is_empty() {
-            //TODO: is there a safer way to convert OsString to String?
-            h.insert(k.to_string(), v.vals[0].clone().into_string().unwrap());
-        }
-    }
-    TryFrom::try_from(h)
-}
-
-impl<'s, 't> TryFrom<&'s ArgMatches<'t>> for MessageQuery {
+impl TryFrom<Filters> for MessageQuery {
     type Err = Error;
-    fn try_from(matches: &'s ArgMatches<'t>) -> Result<Self, Error> {
-        ids(matches)
-            .map(MessageQuery::Ids)
-            .ok_or_else(|| format_err!("Couldn't parse id"))
-            .or_else(|_| try_filtered(matches).map(MessageQuery::Filtered))
+    fn try_from(fs: Filters) -> Result<Self, Error> {
+        if !fs.id.is_empty() {
+            Ok(MessageQuery::Ids(fs.id))
+        } else {
+            let query: FilteredQuery = TryFrom::try_from(fs)?;
+            Ok(MessageQuery::Filtered(query))
+        }
     }
 }
 
@@ -108,9 +102,9 @@ fn merge(a: &mut Value, b: &Value) {
 }
 
 impl FilteredQuery {
-    pub fn as_json(&self, es_major_version: Option<u8>) -> Value {
+    pub fn as_json(&self, es_major_version: u8) -> Value {
         let wrap_if_es2 = move |json: Value| {
-            if Some(2) == es_major_version {
+            if 2 == es_major_version {
                 json!({ "query": json })
             } else {
                 json

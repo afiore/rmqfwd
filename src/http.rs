@@ -23,11 +23,15 @@ pub fn routes(
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") => {
             let msg_store = msg_store.clone();
-            let mut params = HashMap::new();
+            let mut params: HashMap<String, Vec<String>> = HashMap::new();
             let query_pairs = uri.query_pairs();
 
             for (k, v) in query_pairs {
-                params.insert(k.to_owned().to_string(), v.to_owned().to_string());
+                let (k, v) = (k.to_string(), v.to_string());
+                params
+                    .entry(k)
+                    .and_modify(|vs| vs.push(v.clone())) //TODO: remove clone!
+                    .or_insert_with(|| vec![v]);
             }
 
             match TryFrom::try_from(params) {

@@ -1,11 +1,11 @@
 use crate::rmq::{Message, TimestampedMessage};
 use chrono::prelude::*;
-use clap::ArgMatches;
 use failure::Error;
 use futures::stream;
 use futures::sync::mpsc::Receiver;
 use futures::{Future, Stream};
 use hyper::{header, Body, Client, Method, Request};
+use opt::EsConfig as Config;
 use serde_json;
 use std::boxed::Box;
 use std::sync::Arc;
@@ -20,54 +20,6 @@ pub type Task = Box<Future<Item = (), Error = Error> + Send>;
 pub type IoFuture<A> = Box<Future<Item = A, Error = Error> + Send>;
 pub type FilteredQuery = query::FilteredQuery;
 pub type MessageQueryBuilder = query::MessageQueryBuilder;
-
-#[derive(Debug, Clone)]
-pub struct Config {
-    //TODO: add support for TLS
-    base_url: String,
-    index: String,
-    doc_type: String,
-    es_major_version: Option<u8>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            base_url: "http://localhost:9200".to_string(),
-            index: "rabbit_messages".to_string(),
-            doc_type: "message".to_string(),
-            es_major_version: None,
-        }
-    }
-}
-
-impl<'a, 'b> From<&'a ArgMatches<'b>> for Config {
-    fn from(matches: &'a ArgMatches<'b>) -> Config {
-        let mut config = Config::default();
-
-        if let Some(base_url) = matches.value_of("es-base-url") {
-            config.base_url = base_url.to_string();
-        }
-
-        if let Some(index) = matches.value_of("es-index") {
-            config.index = index.to_string();
-        }
-
-        if let Some(doc_type) = matches.value_of("es-type") {
-            config.doc_type = doc_type.to_string();
-        }
-
-        if let Some(es_major_version) = matches.value_of("es-major-version") {
-            config.es_major_version = Some(
-                es_major_version
-                    .parse::<u8>()
-                    .expect("es-major-version: positive integer expected!"),
-            );
-        }
-
-        config
-    }
-}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct EsDoc<A> {
@@ -190,7 +142,7 @@ impl EsEndpoints for Config {
     fn message_url(&self, id: Option<String>) -> Result<Url, ParseError> {
         let without_id = self
             .index_url()
-            .and_then(|u| u.join(&format!("{}/", self.doc_type)))?;
+            .and_then(|u| u.join(&format!("{}/", self.message_type)))?;
 
         match id {
             Some(id) => without_id.join(&format!("{}/", id)),
@@ -211,7 +163,7 @@ impl EsEndpoints for Config {
 
     fn mapping_url(&self) -> Result<Url, ParseError> {
         let index_url = self.index_url()?;
-        let mapping_url = index_url.join(&format!("_mapping/{}/", &self.doc_type))?;
+        let mapping_url = index_url.join(&format!("_mapping/{}/", &self.message_type))?;
         Ok(mapping_url)
     }
 
@@ -234,6 +186,7 @@ pub struct MessageStore {
 }
 
 impl MessageStore {
+    //TODO: do we really need to mutate?
     pub fn detecting_es_version(mut config: Config) -> IoFuture<Self> {
         let client = Client::new();
         let root_url = config.root_url().unwrap();
@@ -251,7 +204,7 @@ impl MessageStore {
             match major_min_bugfix.next().map(|s| s.parse::<u8>().expect("expected es-major-version to be an integer")) {
                 Some(n) if n == 2 || n == 6 => {
                     debug!("Supported Elasticsearch major version detected: {}", n);
-                    config.es_major_version = Some(n);
+                    config.major_version = n;
                 }
                 _ => {
                     warn!("Unsupported Elasticsearch version detected. Supported versions are 2xx and 6xx. This is likely to fail!");
@@ -274,7 +227,7 @@ impl MessageStore {
         let config = self.config.clone();
 
         let es_field = move |field_type: &str| {
-            if config.es_major_version == Some(2 as u8) {
+            if config.major_version == 2 as u8 {
                 json!({
                     "type": field_type,
                     "index": "not_analyzed",
@@ -426,7 +379,7 @@ impl MessageSearchService for MessageStore {
                 )
             }
             MessageQuery::Filtered(fq) => {
-                let json_query = fq.as_json(self.config.es_major_version);
+                let json_query = fq.as_json(self.config.major_version);
                 info!(
                     "sending ES query: {} to {:?}",
                     serde_json::to_string_pretty(&json_query).unwrap(),
@@ -532,7 +485,9 @@ pub mod test {
     fn init_test_store(rt: &mut Runtime, msgs: Vec<StoredMessage>) -> MessageStore {
         let config = Config {
             index: "rabbit_messages_test".to_string(),
-            ..Config::default()
+            message_type: "rabbit_message".to_string(),
+            base_url: "http://localhost:9200".to_string(),
+            major_version: 6,
         };
 
         let result = rt.block_on(create_msgs(config, msgs));
