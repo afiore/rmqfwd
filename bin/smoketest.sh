@@ -1,4 +1,4 @@
-set -e -x
+set -e -x -u
 
 rmq_username=test_user
 rmq_password=test_password
@@ -16,12 +16,13 @@ export_dir=/tmp/rmqfwd_exports
 es_index=smoketest
 es_type=message
 rmqfwd_timerange_ops="--since 2010-07-08T09:10:11.012Z --until 2030-07-08T09:10:11.012Z"
-rmqfwd_common_ops="--rmq-port 5673 --rmq-creds $rmq_username:$rmq_password --es-index $es_index --es-type $es_type"
+rmq_ops="--rmq-port 5673 --rmq-creds $rmq_username:$rmq_password" 
+es_ops="--es-index $es_index --es-type $es_type"
 uuids=()
 
 trap "killall rmqfwd" EXIT 
 trap "killall rmqfwd" INT 
-RUST_LOG='rmqfwd=debug' $rmqfwd_bin trace $rmqfwd_common_ops &
+RUST_LOG='rmqfwd=debug,hyper=debug' $rmqfwd_bin trace $es_ops $rmq_ops &
 
 if [ ! -f $rmq_admin ]
 then
@@ -64,7 +65,7 @@ i=0
 while [ $i -lt 2 ]
 do
   echo "republishing message with uuid: ${uuids[$i]}"
-  RUST_LOG='rmqfwd=debug' $rmqfwd_bin republish $rmqfwd_common_ops -b "${uuids[$i]}" -e "publish.$exchange" --target-exchange $other_exchange --target-routing-key $routing_key
+  RUST_LOG='rmqfwd=debug' $rmqfwd_bin republish $es_ops $rmq_ops -b "${uuids[$i]}" -e "publish.$exchange" --target-exchange $other_exchange --target-routing-key $routing_key
   sleep 2
   ((i+=1))
 done
@@ -80,7 +81,7 @@ fi
 
 # 2. export one single message, checking target directory contains expected file
 
-RUST_LOG=rmqfwd=debug $rmqfwd_bin export $rmqfwd_common_ops -f -p -e "publish.$exchange" -b "${uuids[0]}" $rmqfwd_timerange_ops  $export_dir
+RUST_LOG=rmqfwd=debug $rmqfwd_bin export $es_ops -f -p -e "publish.$exchange" -b "${uuids[0]}" $rmqfwd_timerange_ops  $export_dir
 sleep 1
 expected=1
 file_count=$(find $export_dir -name '*.json' | wc -l)
@@ -117,7 +118,7 @@ do
   ids_ops="$ids_ops --id $id"
 done
 
-RUST_LOG=rmqfwd=debug $rmqfwd_bin export $rmqfwd_common_ops $ids_ops -f $export_dir
+RUST_LOG=rmqfwd=debug $rmqfwd_bin export $es_ops $ids_ops -f $export_dir
 for id in "${ids[@]}"
 do
   id_file="${export_dir}/$id.json"	
