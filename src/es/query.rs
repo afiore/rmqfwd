@@ -30,7 +30,6 @@ impl TryFrom<Filters> for FilteredQuery {
     type Err = Error;
 
     fn try_from(f: Filters) -> Result<Self, Error> {
-        println!("getting a hashmap");
         let hm: HashMap<String, Vec<String>> = f.into();
         TryFrom::try_from(hm)
     }

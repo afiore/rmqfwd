@@ -292,11 +292,9 @@ impl MessageStore {
 
 impl MessageSearchService for MessageStore {
     // NOTE: what happens when the mappings change?
+    //
     // ES provides a convenient API for that: https://www.elastic.co/guide/en/elasticsearch/reference/2.4/docs-reindex.html
     // perhaps this tool should automatically manage migrations by managing two indices at the same time...
-    //
-    // TODO: do not create the index if it already exists!
-    //
 
     fn init_store(&self) -> Task {
         use futures::future;
@@ -363,6 +361,8 @@ impl MessageSearchService for MessageStore {
                             .uri(index_url.to_string())
                             .body(Body::empty())
                             .expect("couldn't build a request!");
+
+                        info!("sending a request: {:?}", req);
 
                         Box::new(
                             http::expect_option::<EsDoc<TimestampedMessage>>(&client, req)
