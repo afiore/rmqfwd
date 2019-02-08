@@ -1,6 +1,6 @@
 [package]
 name = "rmqfwd"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Andrea Fiore <andrea.giulio.fiore@gmail.com>"]
 description = "A tool to persist, export and republish RabbitMQ messages"
 readme = "README.md"
