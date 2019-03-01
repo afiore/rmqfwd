@@ -261,7 +261,7 @@ impl MessageStore {
                   "routing_key": es_field("string"),
                   "exchange": es_field("string"),
                   "node": es_field("string"),
-                  //TODO: add routed_queues
+                  "routed_queues": es_field("string"),
                   "uuid": es_field("string"),
                   "properties": {
                       "type": "object",
