@@ -10,8 +10,6 @@ Once persisted, messages can be filtered, exported, and re-published.
 ## Usage
 
 ```
-rmqfwd 0.1.0
-
 USAGE:
     rmqfwd [SUBCOMMAND]
 

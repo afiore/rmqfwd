@@ -4,13 +4,14 @@ use crate::lapin::channel::{
     BasicConsumeOptions, BasicProperties, BasicPublishOptions, ConfirmSelectOptions,
     QueueBindOptions, QueueDeclareOptions,
 };
-use crate::lapin::client;
+use crate::lapin::client::Client;
 use crate::lapin::client::ConnectionOptions;
 use crate::lapin::message::Delivery;
 use crate::lapin::types::*;
 use chrono::prelude::*;
 use failure::Error;
 use futures::future::Future;
+use futures::future::{loop_fn, Loop};
 use futures::sync::mpsc::Sender;
 use futures::{future, IntoFuture, Sink, Stream};
 use opt::RmqConfig as Config;
@@ -20,7 +21,8 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::str;
 use std::str::FromStr;
 use tokio;
-use tokio::net::TcpStream;
+use tokio::net::{ConnectFuture, TcpStream};
+use tokio::timer::Delay;
 
 const REPLAYED_HEADER: &str = "X-Replayed";
 
@@ -265,6 +267,53 @@ fn address(config: Config) -> SocketAddr {
         .unwrap()
 }
 
+fn tcp_connection(
+    address: SocketAddr,
+    opts: ConnectionOptions,
+    attempts: u8,
+) -> Box<Future<Item = Client<TcpStream>, Error = failure::Error> + Send + 'static> {
+    let max_attempts = 10;
+    let opts2 = opts.clone();
+    Box::new(
+        TcpStream::connect(&address)
+            .map_err(Error::from)
+            .and_then(move |stream| Client::connect(stream, opts).map_err(Error::from))
+            .and_then(|(client, heartbeat)| {
+                tokio::spawn(heartbeat.map_err(|e| eprintln!("heartbeat error: {:?}", e)))
+                    .into_future()
+                    .map(|_| client)
+                    .map_err(|_| failure::err_msg("spawn error"))
+            })
+            .then(move |res| match res {
+                Err(e) => {
+                    if attempts > max_attempts {
+                        Box::new(future::err(e))
+                    } else {
+                        // TODO: wrap sleep into a future
+                        //
+                        //use std::time::{Duration, Instant};
+                        //let when = Instant::now() + Duration::from_secs(2);
+                        //Box::new(
+                        //    Delay::new(when)
+                        //        .map_err(Error::from)
+                        //        .and_then(|_| tcp_connection(address.clone(), attempts + 1)),
+                        //)
+
+                        warn!(
+                            "failed to connect to rabbitmq. Re-attempting in {} seconds ...",
+                            attempts
+                        );
+                        use std::time::Duration;
+                        let wait_time = Duration::from_secs(1 * (attempts as u64));
+                        std::thread::sleep(wait_time);
+                        tcp_connection(address, opts2, attempts + 1)
+                    }
+                }
+                Ok(stream) => Box::new(future::ok(stream)),
+            }),
+    )
+}
+
 fn setup_channel(
     config: Config,
 ) -> Box<Future<Item = Channel<TcpStream>, Error = failure::Error> + Send + 'static> {
@@ -284,22 +333,11 @@ fn setup_channel(
     };
     //TODO: do we have to convert the error at each step?
     Box::new(
-        TcpStream::connect(&address(config))
-            .map_err(Error::from)
-            .and_then(|stream| {
-                client::Client::connect(stream, connection_opts).map_err(Error::from)
-            })
-            .and_then(|(client, heartbeat)| {
-                tokio::spawn(heartbeat.map_err(|e| eprintln!("heartbeat error: {:?}", e)))
-                    .into_future()
-                    .map(|_| client)
-                    .map_err(|_| failure::err_msg("spawn error"))
-            })
-            .and_then(|client| {
-                client
-                    .create_confirm_channel(ConfirmSelectOptions::default())
-                    .map_err(Error::from)
-            }),
+        tcp_connection(address(config), connection_opts, 1).and_then(|client| {
+            client
+                .create_confirm_channel(ConfirmSelectOptions::default())
+                .map_err(Error::from)
+        }),
     )
 }
 

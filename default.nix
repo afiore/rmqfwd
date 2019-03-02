@@ -13,7 +13,7 @@ stdenv.mkDerivation {
       git
       gnused
       coreutils
-      gitAndTools.hub
+      travis
     ];
 
     RUST_LOG="warn";
