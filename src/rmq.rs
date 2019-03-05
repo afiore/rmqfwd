@@ -11,7 +11,6 @@ use crate::lapin::types::*;
 use chrono::prelude::*;
 use failure::Error;
 use futures::future::Future;
-use futures::future::{loop_fn, Loop};
 use futures::sync::mpsc::Sender;
 use futures::{future, IntoFuture, Sink, Stream};
 use opt::RmqConfig as Config;
@@ -21,8 +20,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::str;
 use std::str::FromStr;
 use tokio;
-use tokio::net::{ConnectFuture, TcpStream};
-use tokio::timer::Delay;
+use tokio::net::TcpStream;
 
 const REPLAYED_HEADER: &str = "X-Replayed";
 
@@ -304,7 +302,7 @@ fn tcp_connection(
                             attempts
                         );
                         use std::time::Duration;
-                        let wait_time = Duration::from_secs(1 * (attempts as u64));
+                        let wait_time = Duration::from_secs(u64::from(attempts));
                         std::thread::sleep(wait_time);
                         tcp_connection(address, opts2, attempts + 1)
                     }

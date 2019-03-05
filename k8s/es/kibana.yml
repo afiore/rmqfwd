@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: kibana
+  labels:
+    app: kibana
+spec:
+  # modify replicas according to your case
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kibana
+  template:
+    metadata:
+      labels:
+        app: kibana
+    spec:
+      containers:
+      - name: kibana 
+        image: docker.elastic.co/kibana/kibana-oss:6.2.4
+        ports:
+        - containerPort: 5601
+        volumeMounts:
+        - name: config
+          mountPath: /usr/share/kibana/config
+          readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: kibana-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana-lb
+  labels:
+    app: kibana
+spec:
+  selector:
+    app: kibana
+  ports:
+  - name: http
+    port: 5601
+  type: LoadBalancer
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kibana-config
+data:
+  kibana.yml: |
+    ---
+    server.name: kibana
+    server.host: "0"
+    elasticsearch.url: "http://elasticsearch-0.es.default.svc.cluster.local:9200"

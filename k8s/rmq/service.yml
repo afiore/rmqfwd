@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rmq
+spec:
+  ports:
+  - port: 4369
+    name: rabbitmq-epmd
+  - port: 5672
+    name: rabbitmq-main
+  - port: 15672
+    name: rabbitmq-management
+  - port: 25672
+    name: rabbitmq-management-ssl
+  clusterIP: None
+  selector:
+    app: rmq
