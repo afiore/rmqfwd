@@ -3,9 +3,15 @@ rust:
 - stable
 cache: cargo
 script:
-- cargo build --all
-- cargo test -- --test-threads=1
-- "./bin/smoketest.sh"
+- if [ -z $TRAVIS_TAG ]; then
+    cargo build --all
+  fi
+- if [ -z $TRAVIS_TAG ]; then
+    cargo test -- --test-threads=1
+  fi
+- if [ -z $TRAVIS_TAG ]; then
+  ./bin/smoketest.sh
+  fi
 matrix:
   include:
   - name: With Elasticsearch 6xx
