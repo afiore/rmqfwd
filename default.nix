@@ -14,6 +14,7 @@ stdenv.mkDerivation {
       gnused
       coreutils
       travis
+      musl
     ];
 
     RUST_LOG="warn";
