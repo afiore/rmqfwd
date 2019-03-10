@@ -1,10 +1,14 @@
 use crate::es::StoredMessage;
+use crate::opt::{EsConfig, RmqConfig};
 use failure::Error;
 use futures::{future, Future};
 use serde_json;
+use std::convert::AsRef;
 use std::fs::{create_dir, read_dir, remove_dir_all};
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use tokio::fs::file::File;
+use toml;
 
 pub trait Export {
     fn export_messages(
@@ -43,7 +47,7 @@ impl Export for Exporter {
 
         let setup_target = future::lazy(move || {
             if !target.exists() {
-                info!("creating directory {}", target.display());
+                info!("creating directory {}", &target.display());
                 create_dir(target.clone())
                     .map_err(|e| e.into())
                     .map(|_| target)
@@ -105,6 +109,24 @@ impl Export for Exporter {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct Config {
+    pub elasticsearch: EsConfig,
+    pub rabbitmq: RmqConfig,
+}
+
+fn config_reader<A: Read>(source: &mut A) -> Result<Config, Error> {
+    let mut buf: Vec<u8> = Vec::new();
+    source.read_to_end(&mut buf)?;
+    toml::de::from_slice(&buf[..]).map_err(|e| e.into())
+}
+
+pub fn read_config<P: AsRef<Path>>(path: P) -> Result<Config, Error> {
+    let mut file = std::fs::File::open(path)?;
+    let config = config_reader(&mut file)?;
+    Ok(config)
+}
+
 #[cfg(test)]
 mod test {
     extern crate tempdir;
@@ -114,6 +136,7 @@ mod test {
     use crate::fs::*;
     use failure::Error;
     use std::fs::File;
+    use std::io::Write;
     use std::path::PathBuf;
     use tokio::runtime::Runtime;
 
@@ -195,6 +218,42 @@ mod test {
             docs,
             target,
         );
+    }
+
+    const TOML: &str = r#"
+        [rabbitmq]
+        host = "messages.example.com"
+        port = 5672
+        tracing_exchange = "amqp.rabbitmq.trace"
+
+        [rabbitmq.creds]
+        user = "guest"
+        password = "guest"
+
+        [elasticsearch]
+        index = "rabbit_messages"
+        message_type = "message"
+        base_url = "http://search.example.com:9200"
+        major_version = 6
+        "#;
+
+    #[test]
+    fn test_toml_config_from_string() {
+        let mut bytes = TOML.as_bytes().clone();
+        let config = config_reader(&mut bytes);
+        assert!(config.is_ok());
+    }
+
+    #[test]
+    fn test_toml_config_from_file() {
+        let config_path = TempDir::new("test-config")
+            .expect("cannot create tmpdir!")
+            .into_path()
+            .join("some-file.txt");
+        let mut file = File::create(&config_path).expect("Cannot write file!");
+        file.write_all(TOML.as_bytes().clone()).unwrap();
+
+        assert!(read_config(&config_path).is_ok());
     }
 
 }

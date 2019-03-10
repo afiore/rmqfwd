@@ -15,6 +15,7 @@ extern crate serde;
 extern crate structopt;
 extern crate tokio;
 extern crate tokio_codec;
+extern crate toml;
 extern crate try_from;
 extern crate url;
 

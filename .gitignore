@@ -4,3 +4,4 @@ bin/rabbitmqadmin
 **/*.DS_Store
 .idea
 rabbit-forwarder.iml
+config.toml

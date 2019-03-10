@@ -101,9 +101,9 @@ fn merge(a: &mut Value, b: &Value) {
 }
 
 impl FilteredQuery {
-    pub fn as_json(&self, es_major_version: u8) -> Value {
+    pub fn as_json(&self, es_major_version: &Option<u8>) -> Value {
         let wrap_if_es2 = move |json: Value| {
-            if 2 == es_major_version {
+            if Some(2) == *es_major_version {
                 json!({ "query": json })
             } else {
                 json
