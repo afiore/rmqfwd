@@ -16,13 +16,28 @@ export_dir=/tmp/rmqfwd_exports
 es_index=smoketest
 es_type=message
 rmqfwd_timerange_ops="--since 2010-07-08T09:10:11.012Z --until 2030-07-08T09:10:11.012Z"
-rmq_ops="--rmq-port 5673 --rmq-creds $rmq_username:$rmq_password" 
 es_ops="--es-index $es_index --es-type $es_type"
 uuids=()
 
+cat > ./config.toml  <<- EOF
+[rabbitmq]
+host = "localhost"
+port = 5673
+tracing_exchange = "amq.rabbitmq.trace"
+
+[rabbitmq.creds]
+user = "$rmq_username"
+password = "$rmq_password"
+
+[elasticsearch]
+index = "$es_index"
+message_type = "$es_type"
+base_url = "http://localhost:9200"
+EOF
+
 trap "killall rmqfwd" EXIT 
 trap "killall rmqfwd" INT 
-RUST_LOG='rmqfwd=debug,hyper=debug' $rmqfwd_bin trace $es_ops $rmq_ops &
+RUST_LOG='rmqfwd=debug,hyper=debug' $rmqfwd_bin trace -c ./config.toml &
 
 if [ ! -f $rmq_admin ]
 then
@@ -48,6 +63,7 @@ notice() {
   echo -e "\e[32m$1\e[0m"
 }
 
+sleep 5
 echo "about to publish $n_msgs_sent messages in exchange $exchange ..."
 i=0
 while [ $i -lt $n_msgs_sent ]
@@ -65,7 +81,7 @@ i=0
 while [ $i -lt 2 ]
 do
   echo "republishing message with uuid: ${uuids[$i]}"
-  RUST_LOG='rmqfwd=debug' $rmqfwd_bin republish $es_ops $rmq_ops -b "${uuids[$i]}" -e "publish.$exchange" --target-exchange $other_exchange --target-routing-key $routing_key
+  RUST_LOG='rmqfwd=debug' $rmqfwd_bin republish -c ./config.toml -b "${uuids[$i]}" -e "publish.$exchange" --target-exchange $other_exchange --target-routing-key $routing_key
   sleep 2
   ((i+=1))
 done
@@ -81,7 +97,7 @@ fi
 
 # 2. export one single message, checking target directory contains expected file
 
-RUST_LOG=rmqfwd=debug $rmqfwd_bin export $es_ops -f -p -e "publish.$exchange" -b "${uuids[0]}" $rmqfwd_timerange_ops  $export_dir
+RUST_LOG=rmqfwd=debug $rmqfwd_bin export -c ./config.toml -f -p -e "publish.$exchange" -b "${uuids[0]}" $rmqfwd_timerange_ops  $export_dir
 sleep 1
 expected=1
 file_count=$(find $export_dir -name '*.json' | wc -l)
@@ -118,7 +134,7 @@ do
   ids_ops="$ids_ops --id $id"
 done
 
-RUST_LOG=rmqfwd=debug $rmqfwd_bin export $es_ops $ids_ops -f $export_dir
+RUST_LOG=rmqfwd=debug $rmqfwd_bin export -c ./config.toml $ids_ops -f $export_dir
 for id in "${ids[@]}"
 do
   id_file="${export_dir}/$id.json"	

@@ -32,9 +32,11 @@ failure = "0.1"
 failure_derive = "0.1"
 try_from = "0.3"
 structopt = "0.2"
+toml = "0.5"
 
 [dev-dependencies]
 tempdir = "0.3"
+pretty_assertions = "0.6"
 
 [badges]
 travis-ci = { repository = "afiore/rmqfwd", branch = "master" }

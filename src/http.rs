@@ -7,14 +7,14 @@ use hyper::{header, Body, Method, Request, Response, StatusCode};
 use serde_json;
 use std::collections::HashMap;
 use std::marker::Send;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use try_from::TryFrom;
 use url::Url;
 
 type FutureResponse = Box<Future<Item = Response<Body>, Error = Error> + Send>;
 
 pub fn routes(
-    msg_store: &Arc<Mutex<MessageStore>>,
+    msg_store: &Arc<MessageStore>,
     req: Request<Body>,
 ) -> Box<Future<Item = Response<Body>, Error = Error> + Send> {
     let uri = Url::parse(&(format!("http://somehost{}", req.uri().to_string())))
@@ -55,7 +55,7 @@ pub fn routes(
                     //TODO: re-enable
                     fq.aggregate_terms = false;
 
-                    let msg_store = msg_store.lock().unwrap();
+                    let msg_store = msg_store.clone();
                     Box::new(msg_store.search(MessageQuery::Filtered(fq)).then(|results| {
                             match results {
                                 Ok(docs) => Ok(Response::builder()

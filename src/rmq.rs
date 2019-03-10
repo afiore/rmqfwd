@@ -42,7 +42,7 @@ impl TimestampedMessage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct UserCreds {
     pub user: String,
     pub password: String,
@@ -272,6 +272,7 @@ fn tcp_connection(
 ) -> Box<Future<Item = Client<TcpStream>, Error = failure::Error> + Send + 'static> {
     let max_attempts = 10;
     let opts2 = opts.clone();
+    info!("connecting to {:?}", opts);
     Box::new(
         TcpStream::connect(&address)
             .map_err(Error::from)

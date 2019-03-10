@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use structopt::StructOpt;
 
 //TODO: break into two config structs
-#[derive(Debug, Clone, StructOpt)]
+#[derive(Debug, Clone, StructOpt, Deserialize)]
 pub struct RmqConfig {
     /// Set the RabbitMQ host
     #[structopt(long = "rmq-host", default_value = "127.0.0.1")]
@@ -23,7 +23,7 @@ pub struct RmqConfig {
     pub creds: Option<UserCreds>,
 }
 
-#[derive(Debug, Clone, StructOpt)]
+#[derive(Debug, Clone, StructOpt, Deserialize)]
 pub struct EsConfig {
     /// Set the Elasticsearch index
     #[structopt(long = "es-index", default_value = "rabbit_messages")]
@@ -36,10 +36,6 @@ pub struct EsConfig {
     /// Set the Elasticsearch base url
     #[structopt(long = "es-base-url", default_value = "http://localhost:9200")]
     pub base_url: String,
-
-    /// Set the Elasticsearch major version
-    #[structopt(long = "es-major-version", default_value = "6")]
-    pub major_version: u8,
 }
 
 #[derive(Debug, StructOpt)]
@@ -65,7 +61,7 @@ pub struct Filters {
     #[structopt(long = "message-body", short = "b")]
     pub message_body: Option<String>,
 
-    //TODO: configure conflict
+    //TODO: id should conflict with any filtering clause
     /// Filter by one or multiple message ids
     //#[structopt(long = "id", raw(conflicts_with_all(&["since", "until", "exchange", "routing-key", "message-body"])))]
     #[structopt(long = "id")]
@@ -105,10 +101,8 @@ pub enum Command {
     /// Bind a queue to the tracing exchange (e.g. 'amq.rabbitmq.trace') and persists received messages into the message store
     #[structopt(name = "trace")]
     Trace {
-        #[structopt(flatten)]
-        rmq_config: RmqConfig,
-        #[structopt(flatten)]
-        es_config: EsConfig,
+        #[structopt(long = "config-file", short = "c")]
+        config_file: Option<PathBuf>,
         #[structopt(long = "api-port", short = "p", default_value = "1337")]
         api_port: u16,
     },
@@ -116,10 +110,8 @@ pub enum Command {
     /// Republish a subset of the messages present in the data store to an arbitrary exchange"
     #[structopt(name = "republish")]
     Republish {
-        #[structopt(flatten)]
-        rmq_config: RmqConfig,
-        #[structopt(flatten)]
-        es_config: EsConfig,
+        #[structopt(long = "config-file", short = "c")]
+        config_file: Option<PathBuf>,
         #[structopt(flatten)]
         filters: Filters,
         /// The exchange where the messages will be republished
@@ -132,8 +124,8 @@ pub enum Command {
     /// Query the message store and write the result to the file system
     #[structopt(name = "export")]
     Export {
-        #[structopt(flatten)]
-        es_config: EsConfig,
+        #[structopt(long = "config-file", short = "c")]
+        config_file: Option<PathBuf>,
         #[structopt(flatten)]
         filters: Filters,
 
@@ -149,4 +141,17 @@ pub enum Command {
         #[structopt(long = "force", short = "f")]
         force: bool,
     },
+}
+
+pub trait ConfigFile {
+    fn config_file(&self) -> Option<PathBuf>;
+}
+impl ConfigFile for Command {
+    fn config_file(&self) -> Option<PathBuf> {
+        match self {
+            Command::Trace { config_file, .. } => config_file.clone(),
+            Command::Republish { config_file, .. } => config_file.clone(),
+            Command::Export { config_file, .. } => config_file.clone(),
+        }
+    }
 }
