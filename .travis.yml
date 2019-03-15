@@ -19,17 +19,21 @@ matrix:
     env: ES_IMAGE=docker.elastic.co/elasticsearch/elasticsearch:6.5.0
 before_deploy: "./bin/build-release rmqfwd ${TRAVIS_TAG}-${TRAVIS_OS_NAME}"
 deploy:
-- provider: releases
-  api_key:
-    secure: BJUaVdrlRqA7Pg1orh5s1zJSHFuCpr7nrxsYSThGY1DZICATkqKzvdPuROF5PEU3me3M56MKUUIkVJ31nMKUkim4iB6qJGfS1n8FD7WT3x2wncRMy2tyX918ecpqXiVSy/zrDRLuXuTzIhDGMKRdz5RkgS6YvDcIoyy/HqSo0+IAZqXIKrrkidwOHRq9UByzDRcGKBwvuZXyCK3z6POpsYb53CABw/ucB9KtZvvEo0h3UO9OHaTCcJZmI3UZCzoXjg5W9c4t4XI3ntMH+98LYihY7sJ04rwajJj2Ajh5Lardswv1GIUg8lT1ZK7MUJBOHBm7RGF9HVs3TMyjxHv6UvCkGXfmDrJ8RkVj2hVtU9rwII51NA6gHBRQVhEgHa9VJG6vKR5xdmt1FtdU4Adi5Ntk4IqwMzfVjwYljj/uzlQazyZdh6q/Ai7ZfbQuK+PvkMMZjUKxpsxP25ACzUxLReg7R2IrscRMaEsGOigu6RTcxBz6bw9RNeM9V3C1Ad2M94kDJhYYMRfMHY1GH2Co/CIG3idrQCuNOO3lohL7oKgwEL5w6uSdCrI9tLKKGYSUU0OB41Jk/g7RgSHphi+j+9lNiYVMfUiBsvxEDOwABejbfaO4v4LZWgE2mzpkdAGhmJmDv+L9jiPN+IoflGLB/Cf0uIdlefwRqHnjFANCbKI=
-  file_glob: true
-  file: rmqfwd-${TRAVIS_TAG}-${TRAVIS_OS_NAME}.*
-  skip_cleanup: true
-  on:
-    rust: stable
-    tags: true
-- provider: cargo
-  token:
-    secure: jvFn9xB1wBd9XBFC0wEd6Xc9WYx6t3hnILhsivgO5KPS+2sEo8vcBVbwnC+YaSbRvTHuhZkWXNPJK04tB1Oxj4eL5G/6x8i55xb12xDR2sctboeXJCWgh4syAb8kQ8wvN4IanQ/1+QwxT72o7+8JlVJYe0l7W8FtbxrsXyVjxMk4pNRFSX/IWf6ODBhojY4bDgg3Zj6hKwDQTkL8o++E0hN0rNawaU3J/aCsUyRYwD4oQNsKYvFxQSoojnZpMOaIOczFlYg83r7gOjynH6zF+3Hsh2Y9W5cVWARjdwoUB0YS2HxAj5t3552RX0xv9bV0VXgOzQ4F5KIr/7XHq5lEZka4JWZdqj3kMdCh9CAp3Pu2ZtAM28Zu6PiPZviCI5pu+RPJf+k2PsxbKgLsKEppAQqmgd531VRHubVphKqqv75M93uvAp666LmDB8Jyn3nEQxbj8+/AuS+CE9Ip9EKFbdiTGxRHwm7lbU19CKyJwFecrykeBK1426VEbQoNoagP3pO1fw6rfPkEi/19KkkqSqgMZ5/flAr0mvR5oNLs4NU+C68HYEOA5mD3CYFK5MF94WSIOC3XnhYHlqyqkj3sFpGUi9UIG4Hz7Dy9qcipPrNkWGGda/6MUYrN36csl2Gn0ZFEyiH6iY8JE79Ilr1NXY2L1v5668z7E2alJoC9lhk=
-  on:
-    tags: true
+  - provider: releases
+    api_key:
+      secure: vbLrSeUr+whItZq8RupW8XJ7ZFzNTHkb0iNHsai8+3oj3vl6JmUE7t7oXaCwQZHpLiH82oPutYNNI1Q27bpX8UO+TvL7Ntw1cBMVSL1dAANf/kOYf4wGRTEH6PsKY036FPf9PgnmeRnxiVENl2OoFFy8BKcS822LZWpGDrBG8ceFz9tEW5A/D9agJAJaePz7xU0Tti2W8E8rSRtuxceK3J/BLMnLjL2cCsYHWlEk3VpM3LRkQ/IB10WYbOChhiBSKF3L6TZCd1mo1030+62ri6CZMrGO6GzxHSZeGEOx2dPt+2HFYmQhg6KXuI/qX99F2ip9rc/sa9c1pnXxo1cdKyZE3Z96jpAitQ0oYG1vhJcjZ+ZvIpUirANGFkxWCef/obtUx+38QdmPD/mQkzlaaEoaXJwal2lws8+aNCvFAQkxjFGgZF0OHxbyNBnuGxZDRqJot0ct3wa950KKpQE247+VY6dUXwz9JPiWmhP5FdJ19mpcwq/6r3NiNOaRRWa0lbp1fKCVuNTd33ql5ihR1QsKTot7ZpQ04NMOQcXtdwfGLln8M7ri+0zqaqaFYhTK1eND3Jh7akr6H7Cm49HBoxKo4yhL9B21s9P1s4fuHWM4BRdCzzjSFnTvLE5pCoHcDCa3xNnIGfy/FV5vo6yAXe5kPG+UTcTnI4KupNkux6M=
+    file_glob: true
+    file: rmqfwd-${TRAVIS_TAG}-${TRAVIS_OS_NAME}.*
+    on:
+      repo: afiore/rmqfwd
+      tags: true
+  - provider: cargo
+    token:
+      secure: jvFn9xB1wBd9XBFC0wEd6Xc9WYx6t3hnILhsivgO5KPS+2sEo8vcBVbwnC+YaSbRvTHuhZkWXNPJK04tB1Oxj4eL5G/6x8i55xb12xDR2sctboeXJCWgh4syAb8kQ8wvN4IanQ/1+QwxT72o
+ 7+8JlVJYe0l7W8FtbxrsXyVjxMk4pNRFSX/IWf6ODBhojY4bDgg3Zj6hKwDQTkL8o++E0hN0rNawaU3J/aCsUyRYwD4oQNsKYvFxQSoojnZpMOaIOczFlYg83r7gOjynH6zF+3Hsh2Y9W5cVWARjdwoUB0YS2
+ HxAj5t3552RX0xv9bV0VXgOzQ4F5KIr/7XHq5lEZka4JWZdqj3kMdCh9CAp3Pu2ZtAM28Zu6PiPZviCI5pu+RPJf+k2PsxbKgLsKEppAQqmgd531VRHubVphKqqv75M93uvAp666LmDB8Jyn3nEQxbj8+/AuS
+ +CE9Ip9EKFbdiTGxRHwm7lbU19CKyJwFecrykeBK1426VEbQoNoagP3pO1fw6rfPkEi/19KkkqSqgMZ5/flAr0mvR5oNLs4NU+C68HYEOA5mD3CYFK5MF94WSIOC3XnhYHlqyqkj3sFpGUi9UIG4Hz7Dy9qci
+ pPrNkWGGda/6MUYrN36csl2Gn0ZFEyiH6iY8JE79Ilr1NXY2L1v5668z7E2alJoC9lhk=
+    on:
+      tags: true
+      rust: stable
