@@ -24,6 +24,7 @@ deploy:
       secure: vbLrSeUr+whItZq8RupW8XJ7ZFzNTHkb0iNHsai8+3oj3vl6JmUE7t7oXaCwQZHpLiH82oPutYNNI1Q27bpX8UO+TvL7Ntw1cBMVSL1dAANf/kOYf4wGRTEH6PsKY036FPf9PgnmeRnxiVENl2OoFFy8BKcS822LZWpGDrBG8ceFz9tEW5A/D9agJAJaePz7xU0Tti2W8E8rSRtuxceK3J/BLMnLjL2cCsYHWlEk3VpM3LRkQ/IB10WYbOChhiBSKF3L6TZCd1mo1030+62ri6CZMrGO6GzxHSZeGEOx2dPt+2HFYmQhg6KXuI/qX99F2ip9rc/sa9c1pnXxo1cdKyZE3Z96jpAitQ0oYG1vhJcjZ+ZvIpUirANGFkxWCef/obtUx+38QdmPD/mQkzlaaEoaXJwal2lws8+aNCvFAQkxjFGgZF0OHxbyNBnuGxZDRqJot0ct3wa950KKpQE247+VY6dUXwz9JPiWmhP5FdJ19mpcwq/6r3NiNOaRRWa0lbp1fKCVuNTd33ql5ihR1QsKTot7ZpQ04NMOQcXtdwfGLln8M7ri+0zqaqaFYhTK1eND3Jh7akr6H7Cm49HBoxKo4yhL9B21s9P1s4fuHWM4BRdCzzjSFnTvLE5pCoHcDCa3xNnIGfy/FV5vo6yAXe5kPG+UTcTnI4KupNkux6M=
     file_glob: true
     file: rmqfwd-${TRAVIS_TAG}-${TRAVIS_OS_NAME}.*
+    skip_cleanup: true
     on:
       tags: true
   - provider: cargo
