@@ -26,11 +26,11 @@ use rmqfwd::rmq;
 use rmqfwd::rmq::TimestampedMessage;
 use std::path::PathBuf;
 use std::sync::Arc;
+use structopt::StructOpt;
 use tokio::runtime::Runtime;
 
 fn main() -> Result<(), Error> {
     env_logger::init();
-    use structopt::StructOpt;
     let cmd = Command::from_args();
     let config_file_path = cmd
         .config_file()
@@ -70,11 +70,8 @@ fn run_trace(config: Config, mut rt: Runtime, api_port: u16) -> Result<(), Error
 
     let (tx, rx) = mpsc::channel::<TimestampedMessage>(5);
 
-    //TODO: don't clone config
-    let msg_store = Arc::new(
-        rt.block_on(MessageStore::detecting_es_version(config.elasticsearch))
-            .expect("could not determine ES Version"),
-    );
+    let msg_store = rt.block_on(MessageStore::detecting_es_version(config.elasticsearch))?;
+    let msg_store = Arc::new(msg_store);
     let msg_store2 = msg_store.clone();
 
     let addr = ([127, 0, 0, 1], api_port).into();
