@@ -1,4 +1,4 @@
-use rmq::UserCreds;
+use rmq::{Direction, UserCreds};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use structopt::StructOpt;
@@ -53,6 +53,10 @@ pub struct Filters {
     #[structopt(long = "exchange", short = "e")]
     pub exchange: Option<String>,
 
+    /// Filter by message direction (i.e. either 'entering' or 'leaving' the cluster)
+    #[structopt(long = "direction", short = "d")]
+    pub direction: Option<Direction>,
+
     /// Filter by routing key
     #[structopt(long = "routing-key", short = "k")]
     pub routing_key: Option<String>,
@@ -84,6 +88,9 @@ impl Into<HashMap<String, Vec<String>>> for Filters {
         if let Some(routing_key) = self.routing_key {
             h.insert("routing-key".to_owned(), vec![routing_key]);
         }
+        if let Some(direction) = self.direction {
+            h.insert("direction".to_owned(), vec![direction.into()]);
+        }
         if let Some(message_body) = self.message_body {
             h.insert("message-body".to_owned(), vec![message_body]);
         }
@@ -101,6 +108,7 @@ pub enum Command {
     /// Bind a queue to the tracing exchange (e.g. 'amq.rabbitmq.trace') and persists received messages into the message store
     #[structopt(name = "trace")]
     Trace {
+        /// The configuration file path (will try to read /etc/rmqfwd.toml if not supplied)
         #[structopt(long = "config-file", short = "c")]
         config_file: Option<PathBuf>,
         #[structopt(long = "api-port", short = "p", default_value = "1337")]
@@ -110,6 +118,7 @@ pub enum Command {
     /// Republish a subset of the messages present in the data store to an arbitrary exchange"
     #[structopt(name = "republish")]
     Republish {
+        /// The configuration file path (will try to read /etc/rmqfwd.toml if not supplied)
         #[structopt(long = "config-file", short = "c")]
         config_file: Option<PathBuf>,
         #[structopt(flatten)]
@@ -124,6 +133,7 @@ pub enum Command {
     /// Query the message store and write the result to the file system
     #[structopt(name = "export")]
     Export {
+        /// The configuration file path (will try to read /etc/rmqfwd.toml if not supplied)
         #[structopt(long = "config-file", short = "c")]
         config_file: Option<PathBuf>,
         #[structopt(flatten)]

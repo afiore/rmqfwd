@@ -5,13 +5,16 @@ use crate::TimeRange;
 use crate::TimeRangeError;
 use failure::Error;
 use opt::Filters;
+use rmq::Direction;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::str::FromStr;
 use try_from::TryFrom;
 
 #[derive(Debug)]
 pub struct FilteredQuery {
     pub exchange: Option<String>,
+    pub direction: Option<Direction>,
     pub body: Option<String>,
     pub routing_key: Option<String>,
     pub time_range: Option<TimeRange>,
@@ -47,6 +50,12 @@ impl TryFrom<HashMap<String, Vec<String>>> for FilteredQuery {
 
         if let Some(exchange) = first_val(&h, "exchange") {
             query = query.with_exchange(&exchange);
+        }
+
+        if let Some(direction) = first_val(&h, "direction") {
+            if let Ok(direction) = Direction::from_str(&direction) {
+                query = query.with_direction(direction);
+            }
         }
 
         if let Some(routing_key) = first_val(&h, "routing-key") {
@@ -128,6 +137,13 @@ impl FilteredQuery {
             })));
         }
 
+        if let Some(direction) = &self.direction {
+            let direction: String = direction.clone().into();
+            filters.push(wrap_if_es2(json!({
+              "match": {"direction": direction }
+            })));
+        }
+
         if let Some(body) = &self.body {
             filters.push(wrap_if_es2(json!({
               "match": {"body": body }
@@ -204,6 +220,7 @@ impl Default for MessageQueryBuilder {
         MessageQueryBuilder {
             query: FilteredQuery {
                 exchange: None,
+                direction: None,
                 body: None,
                 routing_key: None,
                 time_range: None,
@@ -218,6 +235,11 @@ impl Default for MessageQueryBuilder {
 impl MessageQueryBuilder {
     pub fn with_exchange(mut self, exchange: &str) -> Self {
         self.query.exchange = Some(exchange.to_owned());
+        self
+    }
+
+    pub fn with_direction(mut self, direction: Direction) -> Self {
+        self.query.direction = Some(direction);
         self
     }
 

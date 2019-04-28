@@ -234,7 +234,6 @@ mod test {
         index = "rabbit_messages"
         message_type = "message"
         base_url = "http://search.example.com:9200"
-        major_version = 6
         "#;
 
     #[test]

@@ -437,6 +437,7 @@ pub mod test {
                     message: Message {
                         routing_key: None,
                         exchange: exchange.to_owned(),
+                        direction: None,
                         redelivered: false,
                         body: format!("message with id: {}", id).to_string(),
                         headers: AMQPValue::Void,
