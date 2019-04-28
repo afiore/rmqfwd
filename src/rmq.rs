@@ -19,8 +19,10 @@ use std::collections::BTreeMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::str;
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 use tokio;
 use tokio::net::TcpStream;
+use tokio::timer::Delay;
 
 const REPLAYED_HEADER: &str = "X-Replayed";
 
@@ -69,9 +71,42 @@ impl FromStr for UserCreds {
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub enum Direction {
+    #[serde(rename = "entering")]
+    Entering,
+    #[serde(rename = "leaving")]
+    Leaving,
+}
+
+impl FromStr for Direction {
+    type Err = failure::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "entering" => Ok(Direction::Entering),
+            "leaving" => Ok(Direction::Leaving),
+            other => Err(failure::format_err!(
+                "unexpected value for direction {}. Valid values are 'entering', 'leaving')",
+                other
+            )),
+        }
+    }
+}
+
+impl Into<String> for Direction {
+    fn into(self) -> String {
+        match self {
+            Direction::Entering => "entering".to_owned(),
+            Direction::Leaving => "leaving".to_owned(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Message {
     pub routing_key: Option<String>,
     pub exchange: String,
+    pub direction: Option<Direction>,
     pub redelivered: bool,
     pub body: String,
     pub headers: AMQPValue,
@@ -205,6 +240,23 @@ fn amqp_field_table(v: &AMQPValue) -> FieldTable {
     }
 }
 
+fn parse_direction(s: String) -> Result<(Direction, String), String> {
+    let mut chunks = s.split(".");
+    let mut rest = String::from("");
+    let dir_s = chunks.next();
+
+    for c in chunks {
+        rest.push_str(c);
+    }
+    let dir = match dir_s {
+        Some("publish") => Ok(Direction::Entering),
+        Some("deliver") => Ok(Direction::Leaving),
+        _ => Err(s.clone()), //FIXME: avoid this clone?
+    }?;
+
+    Ok((dir, rest))
+}
+
 impl From<Delivery> for Message {
     fn from(d: Delivery) -> Self {
         let p = d.properties;
@@ -213,6 +265,12 @@ impl From<Delivery> for Message {
         let routing_key = headers
             .remove("routing_keys")
             .and_then(|rk| amqp_str_array(&rk).into_iter().next());
+
+        let (direction, exchange) = match parse_direction(d.routing_key) {
+            Ok((d, exchange)) => (Some(d), exchange),
+            Err(exchange) => (None, exchange),
+        };
+
         let routed_queues = headers
             .remove("routed_queues")
             .map(|q| amqp_str_array(&q))
@@ -233,6 +291,7 @@ impl From<Delivery> for Message {
             content_encoding: props.get("content_encoding").and_then(amqp_str),
             delivery_mode: props.get("delivery_mode").and_then(amqp_u8),
             priority: props.get("priority").and_then(amqp_u8),
+
             correlation_id: props.get("correlation_id").and_then(amqp_str),
             reply_to: props.get("reply_to").and_then(amqp_str),
             expiration: props.get("expiration").and_then(amqp_str),
@@ -246,7 +305,8 @@ impl From<Delivery> for Message {
         Message {
             routing_key,
             routed_queues,
-            exchange: d.routing_key,
+            exchange: exchange.to_owned(),
+            direction: direction,
             redelivered: d.redelivered,
             body: str::from_utf8(&d.data).unwrap().to_string(),
             node,
@@ -283,32 +343,29 @@ fn tcp_connection(
                     .map(|_| client)
                     .map_err(|_| failure::err_msg("spawn error"))
             })
-            .then(move |res| match res {
-                Err(e) => {
-                    if attempts > max_attempts {
-                        Box::new(future::err(e))
-                    } else {
-                        // TODO: wrap sleep into a future
-                        //
-                        //use std::time::{Duration, Instant};
-                        //let when = Instant::now() + Duration::from_secs(2);
-                        //Box::new(
-                        //    Delay::new(when)
-                        //        .map_err(Error::from)
-                        //        .and_then(|_| tcp_connection(address.clone(), attempts + 1)),
-                        //)
+            .then(move |res| {
+                let res: Box<
+                    Future<Item = Client<TcpStream>, Error = failure::Error> + Send + 'static,
+                > =
+                    match res {
+                        Err(e) => {
+                            if attempts > max_attempts {
+                                Box::new(future::err::<Client<TcpStream>, failure::Error>(e))
+                            } else {
+                                let time = Instant::now() + Duration::from_secs(2);
+                                warn!(
+                                "failed to connect to rabbitmq. Re-attempting in {} seconds ...",
+                                attempts
+                            );
 
-                        warn!(
-                            "failed to connect to rabbitmq. Re-attempting in {} seconds ...",
-                            attempts
-                        );
-                        use std::time::Duration;
-                        let wait_time = Duration::from_secs(u64::from(attempts));
-                        std::thread::sleep(wait_time);
-                        tcp_connection(address, opts2, attempts + 1)
-                    }
-                }
-                Ok(stream) => Box::new(future::ok(stream)),
+                                Box::new(Delay::new(time).map_err(Error::from).and_then(
+                                    move |_| tcp_connection(address, opts2, attempts + 1),
+                                ))
+                            }
+                        }
+                        Ok(stream) => Box::new(future::ok(stream)),
+                    };
+                res
             }),
     )
 }
@@ -433,4 +490,25 @@ pub fn bind_and_consume(
             })
             .map_err(Error::from)
     }))
+}
+
+#[test]
+fn test_parse_direction_publish_ok() {
+    assert_eq!(
+        parse_direction("publish.x".to_owned()).unwrap(),
+        (Direction::Entering, "x".to_owned())
+    );
+}
+
+#[test]
+fn test_parse_direction_deliver_ok() {
+    assert_eq!(
+        parse_direction("deliver.yz".to_owned()).unwrap(),
+        (Direction::Leaving, "yz".to_owned())
+    );
+}
+
+#[test]
+fn test_parse_direction_err() {
+    assert!(parse_direction("other.yz".to_owned()).is_err());
 }

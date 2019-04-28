@@ -81,7 +81,7 @@ i=0
 while [ $i -lt 2 ]
 do
   echo "republishing message with uuid: ${uuids[$i]}"
-  RUST_LOG='rmqfwd=debug' $rmqfwd_bin republish -c ./config.toml -b "${uuids[$i]}" -e "publish.$exchange" --target-exchange $other_exchange --target-routing-key $routing_key
+  RUST_LOG='rmqfwd=debug' $rmqfwd_bin republish -c ./config.toml -b "${uuids[$i]}" -e $exchange --target-exchange $other_exchange --target-routing-key $routing_key
   sleep 2
   ((i+=1))
 done
@@ -97,7 +97,7 @@ fi
 
 # 2. export one single message, checking target directory contains expected file
 
-RUST_LOG=rmqfwd=debug $rmqfwd_bin export -c ./config.toml -f -p -e "publish.$exchange" -b "${uuids[0]}" $rmqfwd_timerange_ops  $export_dir
+RUST_LOG=rmqfwd=debug $rmqfwd_bin export -c ./config.toml -f -p -e $exchange -b "${uuids[0]}" $rmqfwd_timerange_ops  $export_dir
 sleep 1
 expected=1
 file_count=$(find $export_dir -name '*.json' | wc -l)
@@ -117,7 +117,7 @@ else
 fi
 
 # 3. Lookup a message using the search endpoint
-total_results=$(curl "http://localhost:1337?exchange=publish.$exchange&message-body=${uuids[0]}" | jq '.hits.total')
+total_results=$(curl "http://localhost:1337?exchange=$exchange&message-body=${uuids[0]}" | jq '.hits.total')
 if [ "$total_results" != "1" ]
 then
    exit_with_error "Expecting one single result, found $total_results"
@@ -127,7 +127,7 @@ then
 fi
 
 # 4. export messages by id
-ids=($(curl 'http://localhost:1337?exchange=publish.some-exchange' | jq '.hits.hits[]._id'| head -n 3 | tr -d '"'))
+ids=($(curl "http://localhost:1337?exchange=$exchange" | jq '.hits.hits[]._id'| head -n 3 | tr -d '"'))
 ids_ops=""
 for id in "${ids[@]}"
 do
