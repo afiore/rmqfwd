@@ -15,10 +15,9 @@ matrix:
   include:
   - name: With Elasticsearch 2xx
     env: ES_IMAGE=docker.elastic.co/elasticsearch/elasticsearch:6.5.0
-#deploy:
-#  - provider: cargo
-#    token:
-#      secure: jvFn9xB1wBd9XBFC0wEd6Xc9WYx6t3hnILhsivgO5KPS+2sEo8vcBVbwnC+YaSbRvTHuhZkWXNPJK04tB1Oxj4eL5G/6x8i55xb12xDR2sctboeXJCWgh4syAb8kQ8wvN4IanQ/1+QwxT72o7+8JlVJYe0l7W8FtbxrsXyVjxMk4pNRFSX/IWf6ODBhojY4bDgg3Zj6hKwDQTkL8o++E0hN0rNawaU3J/aCsUyRYwD4oQNsKYvFxQSoojnZpMOaIOczFlYg83r7gOjynH6zF+3Hsh2Y9W5cVWARjdwoUB0YS2HxAj5t3552RX0xv9bV0VXgOzQ4F5KIr/7XHq5lEZka4JWZdqj3kMdCh9CAp3Pu2ZtAM28Zu6PiPZviCI5pu+RPJf+k2PsxbKgLsKEppAQqmgd531VRHubVphKqqv75M93uvAp666LmDB8Jyn3nEQxbj8+/AuS+CE9Ip9EKFbdiTGxRHwm7lbU19CKyJwFecrykeBK1426VEbQoNoagP3pO1fw6rfPkEi/19KkkqSqgMZ5/flAr0mvR5oNLs4NU+C68HYEOA5mD3CYFK5MF94WSIOC3XnhYHlqyqkj3sFpGUi9UIG4Hz7Dy9qcipPrNkWGGda/6MUYrN36csl2Gn0ZFEyiH6iY8JE79Ilr1NXY2L1v5668z7E2alJoC9lhk=
-#    on:
-#      tags: true
-#      rust: stable
+deploy:
+  provider: cargo
+  on:
+    tags: true
+  token:
+    secure: ImMMXrp9jysl/+sUyJX1Ts3U3oIiHsMqvrzlzmcJUN+MNYK2qP20CpYeLWgqcU2WQ/hIzhaExUjRT+GCxhwDGdpoffyJgQgxK/e67S7KFj+7YSmcL68dPPzsEpIAPjfeAEMx/gUZQD/Jb2nzQp38ZvY94c7NCBWXY6STm+YsxpJzwsrb3uoSePTAn1rNPm4F1JS0GJj51p67P2doe7VFARlhKukm9VJJYVC4H2OJg/O59Tax1az5PAgZNdD+PAs5FhYbK37u7Wp/RDYGmcsXBIfBPDWHqVQ25Ln2yutUaIpHEcQCBflvpDYKJXbwycegnQ+oVGAtZqxmlAuf3IOlxLKxor7xNSl/6lr8MRI9yNWwhrYtGZMsqUs/jGBdfQ2KIQJKqflJmslSLMW017pqMyUVYC2l9iS+SVhjsW/9KYSr4gWI688DH3cs1J4DhjwosX21qYw3ACNjnjhYU61oLeRlgr6jabWCoNSbqYO71r3xTm6TRVT0GRNVFE69zR4CJZuGVEQ0Q0eizGG3d2DMQXoLo8BEfyEiBZbxanAKnbBGTZnzUxZ0ldjxx4TgrSbA+Wej03UDfcvmc5Ty2cqeb1x+q8VUvj1n3zDDmvyIjqiMBFPyDeUKApg6twdSepX6iX2x1mYiC4Vom8ovfr6wtBRnSJiGFCZT8l321gQ4Mlk=
