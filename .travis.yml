@@ -13,7 +13,7 @@ script:
 - if [ -z $TRAVIS_TAG ]; then ./bin/smoketest.sh; fi
 matrix:
   include:
-  - name: With Elasticsearch 2xx
+  - name: With Elasticsearch 6xx
     env: ES_IMAGE=docker.elastic.co/elasticsearch/elasticsearch:6.5.0
 deploy:
   provider: cargo
