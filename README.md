@@ -2,6 +2,8 @@
 
 Rmqfwd listens to messages published in the `amq.rabbitmq.trace` exchange and persists them in a document store (i.e. Elasticsearch).
 
+<!> _WARNING_: this library is unmaintained <!>
+
 This tool is designed with two main use cases in mind:
 
 - _Message auditing:_ by relying Rabbit's [Firehose tracer feature](https://www.rabbitmq.com/firehose.html), `rmqfwd` allows to inspect all the messages flowing in and out of the cluster, 
